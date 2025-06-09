@@ -1,0 +1,72 @@
+# .github/workflows/download-mp3.yml
+name: Download MP3s from Archive.org Folder
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'The base archive.org albums URL (must end with a slash)'
+        required: true
+        default: 'https://archive.org/download/Sharpnel-Discography/SHARPNELSOUND/albums/'
+      folder_name:
+        description: 'The name of the folder to download (as shown in listing)'
+        required: true
+        default: 'sharpnel archive'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: true  # enable push
+          fetch-depth: 0            # get full history
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget jq python3
+
+      - name: Encode folder name
+        id: encode
+        run: |
+          ENCODED=$(python3 - << 'EOF'
+import urllib.parse, sys
+print(urllib.parse.quote(sys.argv[1]))
+EOF
+          "${{ github.event.inputs.folder_name }}")
+          echo "encoded=$ENCODED" >> $GITHUB_OUTPUT
+
+      - name: Find folder URL
+        id: find_folder
+        run: |
+          BASE="${{ github.event.inputs.base_url }}"
+          ENC="${{ steps.encode.outputs.encoded }}"
+          FOLDER_PATH=$(curl -s "$BASE" \
+            | grep -oP 'href="[^"/]+' \
+            | sed -E 's/href="//' \
+            | grep "$ENC" \
+            | head -n1)
+          if [ -z "$FOLDER_PATH" ]; then
+            echo "Folder not found in listing." >&2
+            exit 1
+          fi
+          echo "folder_path=$FOLDER_PATH" >> $GITHUB_OUTPUT
+
+      - name: Download MP3 files
+        run: |
+          BASE="${{ github.event.inputs.base_url }}"
+          PATH="${{ steps.find_folder.outputs.folder_path }}"
+          TARGET_DIR="${{ github.event.inputs.folder_name }}"
+          mkdir -p "$TARGET_DIR"
+          FULL_URL="${BASE}${PATH}/"
+          wget -r -np -nd -A '*.mp3' -P "$TARGET_DIR" "$FULL_URL"
+
+      - name: Commit downloaded files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add "${{ github.event.inputs.folder_name }}"
+          git commit -m "Add MP3s from folder '${{ github.event.inputs.folder_name }}'"
+          git push
