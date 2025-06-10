@@ -176,12 +176,21 @@
     const foldersEl=document.getElementById('folders'),
           audio=document.getElementById('audio'),
           cover=document.getElementById('cover'),
-          info=document.getElementById('track-info'),
-          btn={ prev: 'prev', rew:'rew', play:'play', ff:'ff', next:'next', loop:'loop', seek:'seek', nextFolder:'next-folder' }
-            .reduce((o,id)=> (o[id]=document.getElementById(id),o), {});
+          info=document.getElementById('track-info');
+
+    // ボタンIDの配列を用意し、配列のreduceで取得
+    const btnIds = [
+      'prev', 'rew', 'play', 'ff',
+      'next', 'loop', 'seek', 'next-folder'
+    ];
+    const btn = btnIds.reduce((o, id) => {
+      const key = id === 'next-folder' ? 'nextFolder' : id;
+      o[key] = document.getElementById(id);
+      return o;
+    }, {});
+
     let folders=[], curFolder=0, tracks=[], curTrack=0;
 
-    // GitHub API からフォルダ取得
     async function loadFolders(){
       let res=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${pathAlbums}`);
       let items=await res.json();
@@ -196,7 +205,6 @@
       selectFolder(0);
     }
 
-    // フォルダ選択
     async function selectFolder(idx){
       curFolder=idx; curTrack=0;
       [...foldersEl.children].forEach((b,i)=>
@@ -209,7 +217,6 @@
       loadTrack(0);
     }
 
-    // トラック読み込み
     function loadTrack(i){
       curTrack=i;
       audio.src=tracks[i].url;
@@ -217,12 +224,11 @@
       cover.classList.remove('playing');
       loadCover(tracks[i].url);
       audio.load();
-      audio.play().catch(()=>{/* ユーザー操作待ち */});
+      audio.play().catch(()=>{});
       updateMediaSession();
       updateLoopUI();
     }
 
-    // ID3カバー取得
     function loadCover(url){
       jsmediatags.read(url, {
         onSuccess: tag => {
@@ -238,7 +244,6 @@
       });
     }
 
-    // Media Session
     function updateMediaSession(){
       if('mediaSession' in navigator){
         navigator.mediaSession.metadata=new MediaMetadata({
@@ -248,27 +253,23 @@
       }
     }
 
-    // ループボタン更新
     function updateLoopUI(){
       btn.loop.textContent = audio.loop ? '🔁 On' : '🔁 Off';
     }
 
-    // イベント
-    btn.play.onclick = ()=> audio.paused ? audio.play() : audio.pause();
-    btn.prev.onclick = ()=> loadTrack((curTrack-1+tracks.length)%tracks.length);
-    btn.next.onclick = ()=> loadTrack((curTrack+1)%tracks.length);
-    btn.rew .onclick = ()=> audio.currentTime=Math.max(0,audio.currentTime-10);
-    btn.ff  .onclick = ()=> audio.currentTime=Math.min(audio.duration||0,audio.currentTime+10);
-    btn.loop.onclick = ()=>{ audio.loop=!audio.loop; updateLoopUI(); };
-    audio.onplay    = ()=>{ btn.play.textContent='⏸️'; cover.classList.add('playing'); };
-    audio.onpause   = ()=>{ btn.play.textContent='▶️'; cover.classList.remove('playing'); };
-    audio.ontimeupdate = ()=>{
-      if(audio.duration) btn.seek.value = audio.currentTime/audio.duration*100;
-    };
-    btn.seek.oninput = e=>{
-      if(audio.duration) audio.currentTime = audio.duration*(e.target.value/100);
-    };
+    // イベントリスナー
+    btn.play.onclick   = ()=> audio.paused ? audio.play() : audio.pause();
+    btn.prev.onclick   = ()=> loadTrack((curTrack-1+tracks.length)%tracks.length);
+    btn.next.onclick   = ()=> loadTrack((curTrack+1)%tracks.length);
+    btn.rew.onclick    = ()=> audio.currentTime=Math.max(0,audio.currentTime-10);
+    btn.ff.onclick     = ()=> audio.currentTime=Math.min(audio.duration||0,audio.currentTime+10);
+    btn.loop.onclick   = ()=>{ audio.loop=!audio.loop; updateLoopUI(); };
+    btn.seek.oninput   = e=>{ if(audio.duration) audio.currentTime=audio.duration*(e.target.value/100); };
     btn.nextFolder.onclick = ()=> selectFolder((curFolder+1)%folders.length);
+
+    audio.onplay      = ()=>{ btn.play.textContent='⏸️'; cover.classList.add('playing'); };
+    audio.onpause     = ()=>{ btn.play.textContent='▶️'; cover.classList.remove('playing'); };
+    audio.ontimeupdate= ()=>{ if(audio.duration) btn.seek.value = audio.currentTime/audio.duration*100; };
 
     await loadFolders();
   })();
