@@ -25,31 +25,29 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq python3 python3-pip
+          sudo apt-get install -y wget python3
 
       - name: URL-encode folder name
         id: encode
         run: |
-          encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${{ github.event.inputs.folder_name }}")
+          # URL-encode (spaces→%20) だけ必要なら簡易版でOK
+          encoded=$(echo -n "${{ github.event.inputs.folder_name }}" | sed 's/ /%20/g')
           echo "encoded=${encoded}" >> $GITHUB_OUTPUT
-
-      - name: Fetch directory listing
-        id: list
-        run: |
-          curl -s "${{ github.event.inputs.base_url }}" > listing.html
-          path=$(grep -oP "href=\"\K${{ steps.encode.outputs.encoded }}(?=/)" listing.html)
-          echo "path=${path}" >> $GITHUB_OUTPUT
 
       - name: Download MP3 files
         run: |
-          full_url="${{ github.event.inputs.base_url }}${{ steps.list.outputs.path }}/"
+          full_url="${{ github.event.inputs.base_url }}${{ steps.encode.outputs.encoded }}/"
+          echo "Downloading from: $full_url"
           mkdir -p downloads
-          wget -r -np -nd -A .mp3 -P downloads "$full_url"
+          # wget の失敗時はエラーにする
+          wget -r -np -nd -A .mp3 -P downloads "$full_url" \
+            || { echo "ERROR: Could not download files. Check that the folder exists at $full_url"; exit 1; }
 
       - name: Copy into repo
         run: |
-          mkdir -p "albums/${{ github.event.inputs.folder_name }}"
-          mv downloads/*.mp3 "albums/${{ github.event.inputs.folder_name }}"
+          target_dir="albums/${{ github.event.inputs.folder_name }}"
+          mkdir -p "$target_dir"
+          mv downloads/*.mp3 "$target_dir" || echo "No MP3s found to move."
 
       - name: Commit and push changes
         run: |
