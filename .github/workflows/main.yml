@@ -68,12 +68,11 @@ jobs:
           echo "$json"               >> $GITHUB_OUTPUT
           echo "EOF"                 >> $GITHUB_OUTPUT
 
-      # 7) MP3 を安全にダウンロード
+      # 7) MP3 を安全にダウンロード（printf で内部のクォートをそのまま出力）
       - name: Download MP3 files for each identifier
         run: |
           mkdir -p downloads
-          # JSON 配列をパイプで読み込んで1行ずつ処理
-          echo "${{ steps.list.outputs.IDENTIFIERS }}" \
+          printf '%s' "${{ steps.list.outputs.IDENTIFIERS }}" \
             | jq -r '.[]' \
             | while IFS= read -r id; do
                 url="${BASE_URL}${id}/"
