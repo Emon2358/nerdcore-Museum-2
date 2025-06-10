@@ -13,21 +13,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) リポジトリをフル履歴でチェックアウト
+      # 1) フル履歴チェックアウト
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      # 2) Git の HTTP 設定を拡張
+      # 2) Git HTTP 設定強化
       - name: Configure Git HTTP settings
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
 
-      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
+      # 3) Git LFS セットアップ
       - name: Install Git LFS and track MP3
         run: |
           sudo apt-get update
@@ -37,55 +37,56 @@ jobs:
           git add .gitattributes
           git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
 
-      # 4) 依存ツール wget, jq をインストール
+      # 4) wget, jq のインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq
 
-      # 5) BASE_URL を環境変数に設定
+      # 5) BASE_URL 設定
       - name: Set base URL
         run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
 
-      # 6) ディレクトリ一覧を取得し、パーセントエンコードをデコードして JSON 配列化
+      # 6) ディレクトリ一覧取得＆デコード
       - name: Fetch list of identifiers
         id: list
         run: |
-          # wget --spider で階層レベル1のディレクトリ一覧を取得
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
             | grep '^--' \
             | awk '{print $3}' \
             | grep -oP '[^/]+(?=/$)' \
             | sort -u)
 
-          # URL エンコード(%xx)をデコード
           decoded_ids=()
           for id in $raw_ids; do
             decoded=$(printf '%b' "${id//%/\\x}")
             decoded_ids+=("$decoded")
           done
 
-          # JSON 配列に変換して GITHUB_OUTPUT へ
           json=$(printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s .)
-          echo "Found identifiers: ${decoded_ids[*]}"
           echo "IDENTIFIERS<<EOF" >> $GITHUB_OUTPUT
           echo "$json"               >> $GITHUB_OUTPUT
           echo "EOF"                 >> $GITHUB_OUTPUT
 
-      # 7) MP3 をダウンロード
+      # 7) MP3 を安全にダウンロード
       - name: Download MP3 files for each identifier
         run: |
-          ids=$(echo '${{ steps.list.outputs.IDENTIFIERS }}' | jq -r '.[]')
           mkdir -p downloads
-          for id in $ids; do
-            url="${BASE_URL}${id}/"
-            echo "→ Downloading $id from $url"
-            wget --spider --quiet "$url" \
-              && wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url" \
-              || echo "⚠️ $url が存在しないかアクセス不可"
-          done
+          # JSON 配列をパイプで読み込んで1行ずつ処理
+          echo "${{ steps.list.outputs.IDENTIFIERS }}" \
+            | jq -r '.[]' \
+            | while IFS= read -r id; do
+                url="${BASE_URL}${id}/"
+                echo "→ Downloading [$id] from $url"
+                if wget --spider --quiet "$url"; then
+                  mkdir -p "downloads/$id"
+                  wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url"
+                else
+                  echo "⚠️ $url が存在しないかアクセス不可"
+                fi
+              done
 
-      # 8) albums/ 配下に移動
+      # 8) albums/ に移動
       - name: Copy into repo
         run: |
           mkdir -p albums
@@ -96,7 +97,7 @@ jobs:
               || echo "⚠️ $dir_name に MP3 がありませんでした"
           done
 
-      # 9) コミット＆プッシュ
+      # 9) Commit & Push
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
