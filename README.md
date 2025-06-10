@@ -2,7 +2,7 @@
 
 見やすさ向上させました。
 
-internet archiveのみ対応。
+internet archiveとbandcamp対応。
 
 収録
 
