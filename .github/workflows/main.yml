@@ -20,7 +20,7 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      # 2) Git の HTTP 設定を拡張（postBuffer 増強／低速時切断回避）
+      # 2) Git の HTTP 設定を拡張
       - name: Configure Git HTTP settings
         run: |
           git config --global http.postBuffer 524288000
@@ -47,14 +47,27 @@ jobs:
       - name: Set base URL
         run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
 
-      # 6) ディレクトリ一覧を取得
+      # 6) ディレクトリ一覧を取得し、パーセントエンコードをデコードして JSON 配列化
       - name: Fetch list of identifiers
         id: list
         run: |
-          ids=$(curl -s "$BASE_URL" \
-            | grep -oP 'href="\K[^"/]+(?=/")' \
+          # wget --spider で階層レベル1のディレクトリ一覧を取得
+          raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
+            | grep '^--' \
+            | awk '{print $3}' \
+            | grep -oP '[^/]+(?=/$)' \
             | sort -u)
-          json=$(printf '%s\n' "$ids" | jq -R . | jq -s .)
+
+          # URL エンコード(%xx)をデコード
+          decoded_ids=()
+          for id in $raw_ids; do
+            decoded=$(printf '%b' "${id//%/\\x}")
+            decoded_ids+=("$decoded")
+          done
+
+          # JSON 配列に変換して GITHUB_OUTPUT へ
+          json=$(printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s .)
+          echo "Found identifiers: ${decoded_ids[*]}"
           echo "IDENTIFIERS<<EOF" >> $GITHUB_OUTPUT
           echo "$json"               >> $GITHUB_OUTPUT
           echo "EOF"                 >> $GITHUB_OUTPUT
@@ -72,7 +85,7 @@ jobs:
               || echo "⚠️ $url が存在しないかアクセス不可"
           done
 
-      # 8) ダウンロード結果をリポジトリ内へ
+      # 8) albums/ 配下に移動
       - name: Copy into repo
         run: |
           mkdir -p albums
