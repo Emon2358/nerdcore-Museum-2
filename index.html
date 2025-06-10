@@ -4,10 +4,8 @@
   <meta charset="UTF-8">
   <title>Nerdcore Museum 2 — COOL Player</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <!-- PWA support for background audio on mobile -->
-  <link rel="manifest" href="/manifest.json">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!-- Remove manifest to avoid 404 -->
+  <meta name="mobile-web-app-capable" content="yes">
   <!-- Load jsmediatags for MP3 metadata extraction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js" defer></script>
   <style>
@@ -21,7 +19,7 @@
     <section id="player">
       <img id="cover" src="" alt="Cover Art">
       <div id="track-info">Loading…</div>
-      <audio id="audio" preload="metadata" crossorigin="anonymous"></audio>
+      <audio id="audio" controls preload="metadata"></audio>
       <div id="controls">
         <button id="prev">⏮️</button>
         <button id="rew">⏪</button>
@@ -39,76 +37,89 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', async () => {
-      const owner='Emon2358', repo='nerdcore-Museum-2', pathAlbums='albums';
-      const foldersEl=document.getElementById('folders');
-      const audio=document.getElementById('audio');
-      const cover=document.getElementById('cover');
-      const info=document.getElementById('track-info');
-      const btnIds=['prev','rew','play','ff','next','loop','seek','next-folder'];
-      const btn=btnIds.reduce((o,id)=>{o[id==='next-folder'?'nextFolder':id]=document.getElementById(id);return o;},{});
+      const repo = 'nerdcore-Museum-2', pathAlbums = 'albums';
+      const baseURL = window.location.origin + `/${repo}/${pathAlbums}`;
+      const foldersEl = document.getElementById('folders');
+      const audio = document.getElementById('audio');
+      const cover = document.getElementById('cover');
+      const info = document.getElementById('track-info');
+      const btnIds = ['prev','rew','play','ff','next','loop','seek','next-folder'];
+      const btn = btnIds.reduce((o,id)=>{o[id==='next-folder'?'nextFolder':id]=document.getElementById(id);return o;},{});
 
-      let folders=[],curFolder=0,tracks=[],curTrack=0;
+      let folders = [], curFolder = 0, tracks = [], curTrack = 0;
 
       async function loadFolders(){
-        const res=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${pathAlbums}`);
-        const items=await res.json();
-        folders=items.filter(i=>i.type==='dir');
-        foldersEl.innerHTML='';
-        folders.forEach((f,i)=>{const b=document.createElement('button');b.textContent=f.name;b.onclick=()=>selectFolder(i);foldersEl.appendChild(b);});
+        const res = await fetch(`https://api.github.com/repos/Emon2358/${repo}/contents/${pathAlbums}`);
+        const items = await res.json();
+        folders = items.filter(i=>i.type==='dir');
+        foldersEl.innerHTML = '';
+        folders.forEach((f,i)=>{
+          const name = f.name;
+          const b = document.createElement('button');
+          b.textContent = name;
+          b.onclick = () => selectFolder(i);
+          foldersEl.appendChild(b);
+        });
         if(folders.length) selectFolder(0);
       }
 
       async function selectFolder(idx){
-        curFolder=idx; curTrack=0;
-        [...foldersEl.children].forEach((b,i)=>b.classList.toggle('active',i===idx));
-        const res=await fetch(folders[idx].url);
-        const items=await res.json();
-        tracks=items.filter(i=>i.name.toLowerCase().endsWith('.mp3')).map(i=>({name:i.name,url:i.download_url}));
+        curFolder = idx; curTrack = 0;
+        [...foldersEl.children].forEach((b,i)=>b.classList.toggle('active', i===idx));
+        // fetch folder contents via GitHub API
+        const res = await fetch(folders[idx].url);
+        const items = await res.json();
+        tracks = items.filter(i=>i.name.toLowerCase().endsWith('.mp3'))
+                      .map(i=>{
+                        const file = i.name;
+                        const url = `${baseURL}/${encodeURIComponent(folders[idx].name)}/${encodeURIComponent(file)}`;
+                        return { name: file, url };
+                      });
         if(tracks.length) loadTrack(0);
       }
 
       function loadTrack(i){
-        curTrack=i;
-        audio.src=tracks[i].url;
-        info.textContent=tracks[i].name;
-        cover.src='';
-        // Extract cover art via jsmediatags
-        jsmediatags.read(tracks[i].url, {
+        curTrack = i;
+        const { name, url } = tracks[i];
+        audio.src = url;
+        info.textContent = name;
+        // extract cover from metadata
+        jsmediatags.read(url, {
           onSuccess: tag => {
-            const pic=tag.tags.picture;
+            const pic = tag.tags.picture;
             if(pic){
-              const blob=new Blob([new Uint8Array(pic.data)],{type:pic.format});
-              cover.src=URL.createObjectURL(blob);
+              const blob = new Blob([new Uint8Array(pic.data)],{type:pic.format});
+              cover.src = URL.createObjectURL(blob);
             }
           },
-          onError: ()=>{console.warn('Metadata load failed');}
+          onError: () => { console.warn('Metadata load failed'); }
         });
-        audio.load();
-        audio.play().catch(e=>console.warn('Play interrupted:',e.name));
-        updateMediaSession(); updateLoopUI();
+        updateMediaSession();
+        updateLoopUI();
       }
 
       function updateMediaSession(){
         if('mediaSession' in navigator) navigator.mediaSession.metadata=new MediaMetadata({
-          title:tracks[curTrack].name,
-          artwork:cover.src?[{src:cover.src,sizes:'500x500'}]:[]
+          title: tracks[curTrack].name,
+          artwork: cover.src?[{src:cover.src,sizes:'500x500'}]:[]
         });
       }
 
-      function updateLoopUI(){ btn.loop.textContent=audio.loop?'🔁 On':'🔁 Off'; }
+      function updateLoopUI(){ btn.loop.textContent = audio.loop ? '🔁 On' : '🔁 Off'; }
 
-      // Controls
-      btn.play.onclick=()=>audio.paused?audio.play().catch(()=>{}):audio.pause();
-      btn.prev.onclick=()=>tracks.length&&loadTrack((curTrack-1+tracks.length)%tracks.length);
-      btn.next.onclick=()=>tracks.length&&loadTrack((curTrack+1)%tracks.length);
-      btn.rew.onclick=()=>audio.currentTime=Math.max(0,audio.currentTime-10);
-      btn.ff.onclick=()=>audio.currentTime=Math.min(audio.duration||0,audio.currentTime+10);
-      btn.loop.onclick=()=>{audio.loop=!audio.loop;updateLoopUI();};
-      btn.seek.oninput=e=>{if(audio.duration)audio.currentTime=audio.duration*(e.target.value/100);};
-      btn.nextFolder.onclick=()=>tracks.length&&selectFolder((curFolder+1)%folders.length);
-      audio.onplay=()=>{btn.play.textContent='⏸️';cover.classList.add('playing');};
-      audio.onpause=()=>{btn.play.textContent='▶️';cover.classList.remove('playing');};
-      audio.ontimeupdate=()=>{if(audio.duration)btn.seek.value=(audio.currentTime/audio.duration)*100;};
+      // Control handlers
+      btn.play.onclick = () => { if(audio.paused) audio.play(); else audio.pause(); };
+      btn.prev.onclick = () => tracks.length && loadTrack((curTrack-1+tracks.length)%tracks.length);
+      btn.next.onclick = () => tracks.length && loadTrack((curTrack+1)%tracks.length);
+      btn.rew.onclick  = () => audio.currentTime = Math.max(0, audio.currentTime-10);
+      btn.ff.onclick   = () => audio.currentTime = Math.min(audio.duration||0, audio.currentTime+10);
+      btn.loop.onclick = () => { audio.loop = !audio.loop; updateLoopUI(); };
+      btn.seek.oninput = e => { if(audio.duration) audio.currentTime = audio.duration*(e.target.value/100); };
+      btn.nextFolder.onclick = () => tracks.length && selectFolder((curFolder+1)%folders.length);
+
+      audio.onplay       = () => cover.classList.add('playing');
+      audio.onpause      = () => cover.classList.remove('playing');
+      audio.ontimeupdate = () => { if(audio.duration) btn.seek.value = (audio.currentTime/audio.duration)*100; };
 
       await loadFolders();
     });
