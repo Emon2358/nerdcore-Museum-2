@@ -13,21 +13,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) フル履歴チェックアウト
+      # 1) リポジトリをフル履歴でチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      # 2) Git HTTP 設定強化
+      # 2) Git の HTTP 設定を拡張
       - name: Configure Git HTTP settings
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
 
-      # 3) Git LFS セットアップ
+      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
       - name: Install Git LFS and track MP3
         run: |
           sudo apt-get update
@@ -43,11 +43,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget jq
 
-      # 5) BASE_URL 設定
+      # 5) BASE_URL を環境変数に設定
       - name: Set base URL
         run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
 
-      # 6) ディレクトリ一覧取得＆デコード
+      # 6) ディレクトリ一覧を取得し、JSON 配列をファイル出力
       - name: Fetch list of identifiers
         id: list
         run: |
@@ -64,28 +64,31 @@ jobs:
           done
 
           json=$(printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s .)
+
+          # JSON をファイルに保存
+          echo "$json" > identifiers.json
+
+          # 後続ステップで使う出力としても登録
           echo "IDENTIFIERS<<EOF" >> $GITHUB_OUTPUT
           echo "$json"               >> $GITHUB_OUTPUT
           echo "EOF"                 >> $GITHUB_OUTPUT
 
-      # 7) MP3 を安全にダウンロード（printf で内部のクォートをそのまま出力）
+      # 7) identifiers.json から読み込んで MP3 をダウンロード
       - name: Download MP3 files for each identifier
         run: |
           mkdir -p downloads
-          printf '%s' "${{ steps.list.outputs.IDENTIFIERS }}" \
-            | jq -r '.[]' \
-            | while IFS= read -r id; do
-                url="${BASE_URL}${id}/"
-                echo "→ Downloading [$id] from $url"
-                if wget --spider --quiet "$url"; then
-                  mkdir -p "downloads/$id"
-                  wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url"
-                else
-                  echo "⚠️ $url が存在しないかアクセス不可"
-                fi
-              done
+          jq -r '.[]' identifiers.json | while IFS= read -r id; do
+            url="${BASE_URL}${id}/"
+            echo "→ Downloading [$id] from $url"
+            if wget --spider --quiet "$url"; then
+              mkdir -p "downloads/$id"
+              wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url"
+            else
+              echo "⚠️ $url が存在しないかアクセス不可"
+            fi
+          done
 
-      # 8) albums/ に移動
+      # 8) albums/ にコピー
       - name: Copy into repo
         run: |
           mkdir -p albums
@@ -96,7 +99,7 @@ jobs:
               || echo "⚠️ $dir_name に MP3 がありませんでした"
           done
 
-      # 9) Commit & Push
+      # 9) コミット＆プッシュ
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
