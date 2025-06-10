@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Root albums URL (with trailing slash)'
+        description: 'Archive.org download root URL (must end with slash)'
         required: true
-        default: 'https://archive.org/download/Sharpnel-Discography/SHARPNELSOUND/albums/'
-      folder_name:
-        description: 'Folder name to download'
+        default: 'https://archive.org/download/'
+      identifier:
+        description: 'Archive.org のアイテム識別子 (例: SRPC-0019)'
         required: true
-        default: 'SRPC archive'
+        default: 'SRPC-0019'
+      output_dir:
+        description: 'リポジトリ内にコミットするフォルダ名'
+        required: true
+        default: 'SRPC-0019'
 
 jobs:
   download-and-upload:
@@ -22,32 +26,29 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget python3
+      - name: Install wget
+        run: sudo apt-get update && sudo apt-get install -y wget
 
-      - name: URL-encode folder name
-        id: encode
+      - name: Set variables
         run: |
-          # URL-encode (spaces→%20) だけ必要なら簡易版でOK
-          encoded=$(echo -n "${{ github.event.inputs.folder_name }}" | sed 's/ /%20/g')
-          echo "encoded=${encoded}" >> $GITHUB_OUTPUT
+          echo "DOWNLOAD_ROOT=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
+          echo "ID=${{ github.event.inputs.identifier }}"      >> $GITHUB_ENV
+          echo "OUT=${{ github.event.inputs.output_dir }}"     >> $GITHUB_ENV
 
       - name: Download MP3 files
         run: |
-          full_url="${{ github.event.inputs.base_url }}${{ steps.encode.outputs.encoded }}/"
-          echo "Downloading from: $full_url"
+          FULL_URL="${DOWNLOAD_ROOT}${ID}/"
+          echo "Downloading from: $FULL_URL"
+          # 存在チェック
+          wget --spider "$FULL_URL" || { echo "ERROR: $FULL_URL が見つかりません"; exit 1; }
           mkdir -p downloads
-          # wget の失敗時はエラーにする
-          wget -r -np -nd -A .mp3 -P downloads "$full_url" \
-            || { echo "ERROR: Could not download files. Check that the folder exists at $full_url"; exit 1; }
+          wget -r -np -nd -A '*.mp3' -P downloads "$FULL_URL"
 
       - name: Copy into repo
         run: |
-          target_dir="albums/${{ github.event.inputs.folder_name }}"
-          mkdir -p "$target_dir"
-          mv downloads/*.mp3 "$target_dir" || echo "No MP3s found to move."
+          TARGET="albums/${OUT}"
+          mkdir -p "$TARGET"
+          mv downloads/*.mp3 "$TARGET" || echo "⚠️ MP3 がダウンロードできませんでした"
 
       - name: Commit and push changes
         run: |
@@ -57,6 +58,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add MP3s for ${{ github.event.inputs.folder_name }}"
+            git commit -m "Add MP3s for ${OUT}"
             git push
           fi
