@@ -25,18 +25,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) リポジトリをフル履歴でチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
           fetch-depth: 0
 
+      # 2) Git の HTTP 設定を拡張
       - name: Configure Git HTTP settings
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
 
+      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
       - name: Install Git LFS and track MP3
         run: |
           sudo apt-get update
@@ -46,20 +49,21 @@ jobs:
           git add .gitattributes
           git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
 
-      - name: Install dependencies (wget, jq, youtube-dl)
+      # 4) wget, jq, yt-dlp のインストール
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip
-          pip3 install --user youtube-dl
+          pip3 install --user yt-dlp
 
+      # 5) 入力値を環境変数に設定
       - name: Set inputs as env vars
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
           echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
 
-      # ───────────────────────────────────────────────────────
-      # STEP A: identifiers.json を作る（targets未指定時のみ）
+      # 6) identifiers.json を作る（targets未指定時のみ）
       - name: Fetch list of identifiers (if no TARGETS)
         if: ${{ !github.event.inputs.targets }}
         id: list
@@ -77,34 +81,28 @@ jobs:
           done
 
           printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
-      # ───────────────────────────────────────────────────────
-      # STEP B: 実ダウンロード処理
+
+      # 7) MP3 ダウンロード処理
       - name: Download MP3 files
         run: |
           set -euo pipefail
           mkdir -p downloads
 
-          # prepare the list
           if [ -n "$TARGETS" ]; then
-            # comma区切りを配列に
             IFS=',' read -ra items <<< "$TARGETS"
           else
-            # identifiers.json から
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
 
           for item in "${items[@]}"; do
-            # トリム
             target=$(echo "$item" | xargs)
 
-            # フォルダ名決定
             if [ -n "$FOLDER_NAME" ]; then
               subdir="$FOLDER_NAME"
             else
-              # URLならbasename, idならそのまま
               if [[ "$target" =~ ^https?:// ]]; then
                 subdir=$(basename "${target%/}")
-                subdir="${subdir%%.*}"  # 拡張子削除
+                subdir="${subdir%%.*}"
               else
                 subdir="$target"
               fi
@@ -114,18 +112,20 @@ jobs:
             mkdir -p "downloads/$subdir"
 
             if [[ "$target" =~ \.mp3$ ]]; then
-              # 直接MP3ファイルURL
-              wget -q -O "downloads/$subdir/$(basename "$target")" "$target"
+              # 直接MP3ファイルURL: Content-Disposition から正しい名前を取得
+              wget --content-disposition -q -P "downloads/$subdir" "$target"
+
             elif [[ "$target" =~ archive\.org/download ]]; then
               # archive.org のディレクトリURL
               wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$target"
+
             elif [[ "$target" =~ bandcamp\.com ]]; then
-              # Bandcamp対応
-              # youtube-dlでMP3抽出
-              ~/.local/bin/youtube-dl -x --audio-format mp3 \
+              # Bandcamp対応: yt-dlp でタイトルベースの名前を付与
+              ~/.local/bin/yt-dlp -x --audio-format mp3 \
                 -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
+
             else
-              # 単純なID ※BASE_URL+ID/ とみなす
+              # 単純ID → BASE_URL/ID/ から
               url="${BASE_URL%/}/$target/"
               if wget --spider --quiet "$url"; then
                 wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$url"
@@ -135,6 +135,7 @@ jobs:
             fi
           done
 
+      # 8) albums/ にコピー
       - name: Copy into repo
         run: |
           mkdir -p albums
@@ -146,6 +147,7 @@ jobs:
               || echo "⚠️ $d にMP3がありませんでした"
           done
 
+      # 9) コミット＆プッシュ
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
