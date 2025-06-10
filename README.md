@@ -8,7 +8,7 @@ internet archiveのみ対応。
 
 ・Chiyoda DJ Union
 
-・高速音楽隊シャープネル、新世紀ガヴァンゲリオン、sharpnelsound、djsharpnel
+・高速音楽隊シャープネル、新世紀ガヴァンゲリオン、sharpnelsound
 
 ・えびす食堂
 
