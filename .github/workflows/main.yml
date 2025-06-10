@@ -1,20 +1,12 @@
-name: Download and Commit MP3
+name: Download and Commit MP3 Albums
 
 on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Archive.org download root URL (must end with slash)'
+        description: 'Root albums URL (with trailing slash)'
         required: true
-        default: 'https://archive.org/download/'
-      identifier:
-        description: 'Archive.org のアイテム識別子 (例: SRPC-0019)'
-        required: true
-        default: 'SRPC-0019'
-      output_dir:
-        description: 'リポジトリ内にコミットするフォルダ名'
-        required: true
-        default: 'SRPC-0019'
+        default: 'https://archive.org/download/Sharpnel-Discography/SHARPNELSOUND/albums/'
 
 jobs:
   download-and-upload:
@@ -26,29 +18,50 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Install wget
-        run: sudo apt-get update && sudo apt-get install -y wget
-
-      - name: Set variables
+      - name: Install dependencies
         run: |
-          echo "DOWNLOAD_ROOT=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
-          echo "ID=${{ github.event.inputs.identifier }}"      >> $GITHUB_ENV
-          echo "OUT=${{ github.event.inputs.output_dir }}"     >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y wget jq
 
-      - name: Download MP3 files
+      - name: Set base URL
+        run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
+
+      - name: Fetch list of identifiers
+        id: list
         run: |
-          FULL_URL="${DOWNLOAD_ROOT}${ID}/"
-          echo "Downloading from: $FULL_URL"
-          # 存在チェック
-          wget --spider "$FULL_URL" || { echo "ERROR: $FULL_URL が見つかりません"; exit 1; }
+          # HTML からサブディレクトリ名（Identifier）を抽出
+          ids=$(curl -s "$BASE_URL" \
+            | grep -oP 'href="\K[^"/]+(?=/")' \
+            | sort -u)
+          echo "Found identifiers:"
+          echo "$ids"
+          # 改行区切りを JSON 配列に変換
+          json=$(printf '%s\n' $ids | jq -R . | jq -s .)
+          echo "IDENTIFIERS=$json" >> $GITHUB_OUTPUT
+
+      - name: Download MP3 files for each identifier
+        run: |
+          # IDENTIFIERS は JSON 配列として出力される
+          ids=$(echo '${{ steps.list.outputs.IDENTIFIERS }}' | jq -r '.[]')
           mkdir -p downloads
-          wget -r -np -nd -A '*.mp3' -P downloads "$FULL_URL"
+          for id in $ids; do
+            url="${BASE_URL}${id}/"
+            echo "→ Downloading $id from $url"
+            # 存在確認
+            wget --spider --quiet "$url" \
+              && wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url" \
+              || echo "⚠️ $url が存在しないかアクセス不可"
+          done
 
       - name: Copy into repo
         run: |
-          TARGET="albums/${OUT}"
-          mkdir -p "$TARGET"
-          mv downloads/*.mp3 "$TARGET" || echo "⚠️ MP3 がダウンロードできませんでした"
+          mkdir -p albums
+          for d in downloads/*; do
+            dir_name=$(basename "$d")
+            mkdir -p "albums/${dir_name}"
+            mv "$d"/*.mp3 "albums/${dir_name}/" \
+              || echo "⚠️ $dir_name に MP3 がありませんでした"
+          done
 
       - name: Commit and push changes
         run: |
@@ -58,6 +71,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add MP3s for ${OUT}"
+            git commit -m "Add MP3s for new albums ($(date +'%Y-%m-%d'))"
             git push
           fi
