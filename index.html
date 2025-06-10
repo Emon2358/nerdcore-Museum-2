@@ -4,18 +4,12 @@
   <meta charset="UTF-8">
   <title>Nerdcore Museum 2 — COOL Player</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <!-- Include jsmediatags UMD locally with CDN fallback -->
-  <script src="dist/jsmediatags.min.js"></script>
-  <script>
-    // Fallback to CDN if local not loaded within 1s
-    setTimeout(() => {
-      if (!window.jsmediatags) {
-        const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/jsmediatags@3.9.5/dist/jsmediatags.min.js';
-        document.head.appendChild(s);
-      }
-    }, 1000);
-  </script>
+  <!-- PWA support for background audio on mobile -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!-- Load jsmediatags for MP3 metadata extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js" defer></script>
   <style>
     /* existing CSS unchanged */
   </style>
@@ -45,120 +39,76 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', async () => {
-      const owner = 'Emon2358', repo = 'nerdcore-Museum-2', pathAlbums = 'albums';
-      const foldersEl = document.getElementById('folders');
-      const audio = document.getElementById('audio');
-      const cover = document.getElementById('cover');
-      const info = document.getElementById('track-info');
+      const owner='Emon2358', repo='nerdcore-Museum-2', pathAlbums='albums';
+      const foldersEl=document.getElementById('folders');
+      const audio=document.getElementById('audio');
+      const cover=document.getElementById('cover');
+      const info=document.getElementById('track-info');
+      const btnIds=['prev','rew','play','ff','next','loop','seek','next-folder'];
+      const btn=btnIds.reduce((o,id)=>{o[id==='next-folder'?'nextFolder':id]=document.getElementById(id);return o;},{});
 
-      // Map button IDs to elements
-      const btnIds = ['prev','rew','play','ff','next','loop','seek','next-folder'];
-      const btn = btnIds.reduce((o, id) => {
-        const key = id === 'next-folder' ? 'nextFolder' : id;
-        o[key] = document.getElementById(id);
-        return o;
-      }, {});
+      let folders=[],curFolder=0,tracks=[],curTrack=0;
 
-      let folders = [], curFolder = 0, tracks = [], curTrack = 0;
-
-      async function loadFolders() {
-        try {
-          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${pathAlbums}`);
-          const items = await res.json();
-          folders = items.filter(i => i.type === 'dir');
-          foldersEl.innerHTML = '';
-          folders.forEach((f, i) => {
-            const b = document.createElement('button');
-            b.textContent = f.name; // safe, no decoding
-            b.onclick = () => selectFolder(i);
-            foldersEl.appendChild(b);
-          });
-          if (folders.length) selectFolder(0);
-          else info.textContent = 'No folders available';
-        } catch (e) {
-          console.error('Error loading folders:', e);
-          info.textContent = 'Failed to load folders';
-        }
+      async function loadFolders(){
+        const res=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${pathAlbums}`);
+        const items=await res.json();
+        folders=items.filter(i=>i.type==='dir');
+        foldersEl.innerHTML='';
+        folders.forEach((f,i)=>{const b=document.createElement('button');b.textContent=f.name;b.onclick=()=>selectFolder(i);foldersEl.appendChild(b);});
+        if(folders.length) selectFolder(0);
       }
 
-      async function selectFolder(idx) {
-        curFolder = idx; curTrack = 0;
-        [...foldersEl.children].forEach((b, i) => b.classList.toggle('active', i === idx));
-        try {
-          const res = await fetch(folders[idx].url);
-          const items = await res.json();
-          tracks = items.filter(i => i.name.toLowerCase().endsWith('.mp3'))
-                        .map(i => ({ name: i.name, url: i.download_url }));
-          if (tracks.length === 0) {
-            info.textContent = 'No tracks available'; cover.src = '';
-          } else {
-            loadTrack(0);
-          }
-        } catch (e) {
-          console.error('Error selecting folder:', e);
-          info.textContent = 'Failed to load tracks';
-        }
+      async function selectFolder(idx){
+        curFolder=idx; curTrack=0;
+        [...foldersEl.children].forEach((b,i)=>b.classList.toggle('active',i===idx));
+        const res=await fetch(folders[idx].url);
+        const items=await res.json();
+        tracks=items.filter(i=>i.name.toLowerCase().endsWith('.mp3')).map(i=>({name:i.name,url:i.download_url}));
+        if(tracks.length) loadTrack(0);
       }
 
-      function loadTrack(i) {
-        curTrack = i;
-        audio.src = tracks[i].url;
-        info.textContent = tracks[i].name;
-        cover.classList.remove('playing');
-        loadCover(tracks[i].url);
-        try {
-          audio.load();
-          audio.play().catch(e => console.warn('Play interrupted:', e.name));
-        } catch (e) {
-          console.warn('Audio play error:', e);
-        }
-        updateMediaSession();
-        updateLoopUI();
-      }
-
-      function loadCover(url) {
-        if (!window.jsmediatags) {
-          console.warn('jsmediatags not available'); cover.src = '';
-          return;
-        }
-        jsmediatags.read(url, {
+      function loadTrack(i){
+        curTrack=i;
+        audio.src=tracks[i].url;
+        info.textContent=tracks[i].name;
+        cover.src='';
+        // Extract cover art via jsmediatags
+        jsmediatags.read(tracks[i].url, {
           onSuccess: tag => {
-            const pic = tag.tags.picture;
-            if (pic) {
-              const blob = new Blob([new Uint8Array(pic.data)], { type: pic.format });
-              cover.src = URL.createObjectURL(blob);
-            } else cover.src = '';
+            const pic=tag.tags.picture;
+            if(pic){
+              const blob=new Blob([new Uint8Array(pic.data)],{type:pic.format});
+              cover.src=URL.createObjectURL(blob);
+            }
           },
-          onError: e => { console.warn('Cover load error', e); cover.src = ''; }
+          onError: ()=>{console.warn('Metadata load failed');}
+        });
+        audio.load();
+        audio.play().catch(e=>console.warn('Play interrupted:',e.name));
+        updateMediaSession(); updateLoopUI();
+      }
+
+      function updateMediaSession(){
+        if('mediaSession' in navigator) navigator.mediaSession.metadata=new MediaMetadata({
+          title:tracks[curTrack].name,
+          artwork:cover.src?[{src:cover.src,sizes:'500x500'}]:[]
         });
       }
 
-      function updateMediaSession() {
-        if ('mediaSession' in navigator) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: tracks[curTrack].name,
-            artwork: cover.src ? [{ src: cover.src, sizes: '500x500' }] : []
-          });
-        }
-      }
+      function updateLoopUI(){ btn.loop.textContent=audio.loop?'🔁 On':'🔁 Off'; }
 
-      function updateLoopUI() {
-        btn.loop.textContent = audio.loop ? '🔁 On' : '🔁 Off';
-      }
-
-      // Event listeners
-      btn.play.onclick       = () => audio.paused ? audio.play().catch(()=>{}) : audio.pause();
-      btn.prev.onclick       = () => tracks.length && loadTrack((curTrack - 1 + tracks.length) % tracks.length);
-      btn.next.onclick       = () => tracks.length && loadTrack((curTrack + 1) % tracks.length);
-      btn.rew.onclick        = () => audio.currentTime = Math.max(0, audio.currentTime - 10);
-      btn.ff.onclick         = () => audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10);
-      btn.loop.onclick       = () => { audio.loop = !audio.loop; updateLoopUI(); };
-      btn.seek.oninput       = e => { if (audio.duration) audio.currentTime = audio.duration * (e.target.value / 100); };
-      btn.nextFolder.onclick = () => folders.length && selectFolder((curFolder + 1) % folders.length);
-
-      audio.onplay          = () => { btn.play.textContent = '⏸️'; cover.classList.add('playing'); };
-      audio.onpause         = () => { btn.play.textContent = '▶️'; cover.classList.remove('playing'); };
-      audio.ontimeupdate    = () => { if (audio.duration) btn.seek.value = (audio.currentTime / audio.duration) * 100; };
+      // Controls
+      btn.play.onclick=()=>audio.paused?audio.play().catch(()=>{}):audio.pause();
+      btn.prev.onclick=()=>tracks.length&&loadTrack((curTrack-1+tracks.length)%tracks.length);
+      btn.next.onclick=()=>tracks.length&&loadTrack((curTrack+1)%tracks.length);
+      btn.rew.onclick=()=>audio.currentTime=Math.max(0,audio.currentTime-10);
+      btn.ff.onclick=()=>audio.currentTime=Math.min(audio.duration||0,audio.currentTime+10);
+      btn.loop.onclick=()=>{audio.loop=!audio.loop;updateLoopUI();};
+      btn.seek.oninput=e=>{if(audio.duration)audio.currentTime=audio.duration*(e.target.value/100);};
+      btn.nextFolder.onclick=()=>tracks.length&&selectFolder((curFolder+1)%folders.length);
+      audio.onplay=()=>{btn.play.textContent='⏸️';cover.classList.add('playing');};
+      audio.onpause=()=>{btn.play.textContent='▶️';cover.classList.remove('playing');};
+      audio.ontimeupdate=()=>{if(audio.duration)btn.seek.value=(audio.currentTime/audio.duration)*100;};
 
       await loadFolders();
     });
