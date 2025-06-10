@@ -4,30 +4,39 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Root albums URL (with trailing slash)'
-        required: true
+        description: 'Root albums URL (with trailing slash). 省略可'
+        required: false
         default: 'https://archive.org/download/Sharpnel-Discography/SHARPNELSOUND/albums/'
+      targets:
+        description: |
+          ダウンロード対象をカンマ区切りで指定。
+          - ディレクトリID（defaults to base_url + ID/）
+          - 直接ファイルURL（.mp3, archive.orgディレクトリURL, Bandcamp URL など）
+          省略時は base_url 以下すべてのディレクトリを取得して処理
+        required: false
+      folder_name:
+        description: |
+          albums/ 以下に作成するフォルダ名を指定。
+          省略時は各ID やファイルに応じたサブフォルダを自動作成
+        required: false
 
 jobs:
   download-and-upload:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) リポジトリをフル履歴でチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      # 2) Git の HTTP 設定を拡張
       - name: Configure Git HTTP settings
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
 
-      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
       - name: Install Git LFS and track MP3
         run: |
           sudo apt-get update
@@ -37,18 +46,22 @@ jobs:
           git add .gitattributes
           git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
 
-      # 4) wget, jq のインストール
-      - name: Install dependencies
+      - name: Install dependencies (wget, jq, youtube-dl)
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq
+          sudo apt-get install -y wget jq python3-pip
+          pip3 install --user youtube-dl
 
-      # 5) BASE_URL を環境変数に設定
-      - name: Set base URL
-        run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
+      - name: Set inputs as env vars
+        run: |
+          echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
+          echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
+          echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
 
-      # 6) ディレクトリ一覧を取得し、JSON 配列をファイル出力
-      - name: Fetch list of identifiers
+      # ───────────────────────────────────────────────────────
+      # STEP A: identifiers.json を作る（targets未指定時のみ）
+      - name: Fetch list of identifiers (if no TARGETS)
+        if: ${{ !github.event.inputs.targets }}
         id: list
         run: |
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
@@ -63,32 +76,65 @@ jobs:
             decoded_ids+=("$decoded")
           done
 
-          json=$(printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s .)
-
-          # JSON をファイルに保存
-          echo "$json" > identifiers.json
-
-          # 後続ステップで使う出力としても登録
-          echo "IDENTIFIERS<<EOF" >> $GITHUB_OUTPUT
-          echo "$json"               >> $GITHUB_OUTPUT
-          echo "EOF"                 >> $GITHUB_OUTPUT
-
-      # 7) identifiers.json から読み込んで MP3 をダウンロード
-      - name: Download MP3 files for each identifier
+          printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
+      # ───────────────────────────────────────────────────────
+      # STEP B: 実ダウンロード処理
+      - name: Download MP3 files
         run: |
+          set -euo pipefail
           mkdir -p downloads
-          jq -r '.[]' identifiers.json | while IFS= read -r id; do
-            url="${BASE_URL}${id}/"
-            echo "→ Downloading [$id] from $url"
-            if wget --spider --quiet "$url"; then
-              mkdir -p "downloads/$id"
-              wget -r -np -nd -A '*.mp3' -P "downloads/$id" "$url"
+
+          # prepare the list
+          if [ -n "$TARGETS" ]; then
+            # comma区切りを配列に
+            IFS=',' read -ra items <<< "$TARGETS"
+          else
+            # identifiers.json から
+            mapfile -t items < <(jq -r '.[]' identifiers.json)
+          fi
+
+          for item in "${items[@]}"; do
+            # トリム
+            target=$(echo "$item" | xargs)
+
+            # フォルダ名決定
+            if [ -n "$FOLDER_NAME" ]; then
+              subdir="$FOLDER_NAME"
             else
-              echo "⚠️ $url が存在しないかアクセス不可"
+              # URLならbasename, idならそのまま
+              if [[ "$target" =~ ^https?:// ]]; then
+                subdir=$(basename "${target%/}")
+                subdir="${subdir%%.*}"  # 拡張子削除
+              else
+                subdir="$target"
+              fi
+            fi
+
+            echo "→ Processing [$target] → albums/$subdir/"
+            mkdir -p "downloads/$subdir"
+
+            if [[ "$target" =~ \.mp3$ ]]; then
+              # 直接MP3ファイルURL
+              wget -q -O "downloads/$subdir/$(basename "$target")" "$target"
+            elif [[ "$target" =~ archive\.org/download ]]; then
+              # archive.org のディレクトリURL
+              wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$target"
+            elif [[ "$target" =~ bandcamp\.com ]]; then
+              # Bandcamp対応
+              # youtube-dlでMP3抽出
+              ~/.local/bin/youtube-dl -x --audio-format mp3 \
+                -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
+            else
+              # 単純なID ※BASE_URL+ID/ とみなす
+              url="${BASE_URL%/}/$target/"
+              if wget --spider --quiet "$url"; then
+                wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$url"
+              else
+                echo "⚠️ $url が存在しないかアクセス不可"
+              fi
             fi
           done
 
-      # 8) albums/ にコピー
       - name: Copy into repo
         run: |
           mkdir -p albums
@@ -96,10 +142,10 @@ jobs:
             dir_name=$(basename "$d")
             mkdir -p "albums/${dir_name}"
             mv "$d"/*.mp3 "albums/${dir_name}/" \
-              || echo "⚠️ $dir_name に MP3 がありませんでした"
+              && echo "✔️ albums/${dir_name}/ に移動" \
+              || echo "⚠️ $d にMP3がありませんでした"
           done
 
-      # 9) コミット＆プッシュ
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
