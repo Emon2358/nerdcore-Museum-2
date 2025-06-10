@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <title>Nerdcore Museum 2 — COOL Player</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <!-- Enable standalone on mobile -->
   <meta name="mobile-web-app-capable" content="yes">
-  <!-- Load jsmediatags for MP3 metadata extraction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js" defer></script>
   <style>
     /* CSS unchanged for brevity */
@@ -36,7 +34,6 @@
   <script>
     document.addEventListener('DOMContentLoaded', async () => {
       const repo = 'nerdcore-Museum-2', pathAlbums = 'albums';
-      // Base URL served via GitHub Pages (same origin)
       const baseURL = `${window.location.origin}/${repo}/${pathAlbums}`;
       const foldersEl = document.getElementById('folders');
       const audio = document.getElementById('audio');
@@ -59,53 +56,50 @@
           foldersEl.appendChild(b);
         });
         if (folders.length) selectFolder(0);
+        else info.textContent = 'No folders found';
       }
 
       async function selectFolder(idx) {
         curFolder = idx; curTrack = 0;
-        [...foldersEl.children].forEach((b,i) => b.classList.toggle('active', i === idx));
+        [...foldersEl.children].forEach((b,i)=>b.classList.toggle('active',i===idx));
         const res = await fetch(folders[idx].url);
         const items = await res.json();
-        // Map track URLs to your domain to avoid CORS
-        tracks = items.filter(i => i.name.toLowerCase().endsWith('.mp3')).map(i => ({
-          name: i.name,
-          url: `${baseURL}/${encodeURIComponent(folders[idx].name)}/${encodeURIComponent(i.name)}`
-        }));
+        tracks = items.filter(i=>i.name.toLowerCase().endsWith('.mp3')).map(i=>({name:i.name,url:`${baseURL}/${encodeURIComponent(folders[idx].name)}/${encodeURIComponent(i.name)}`}));
         if (tracks.length) loadTrack(0);
+        else info.textContent = 'No tracks in folder';
       }
 
-      function loadTrack(i) {
+      async function loadTrack(i) {
         curTrack = i;
         const { name, url } = tracks[i];
         audio.src = url;
         info.textContent = name;
-        cover.src = ''; // Clear previous
-        // Use jsmediatags with same-origin URL
-        jsmediatags.read(url, {
-          onSuccess: tag => {
-            const pic = tag.tags.picture;
-            if (pic) {
-              const blob = new Blob([new Uint8Array(pic.data)], { type: pic.format });
-              cover.src = URL.createObjectURL(blob);
-            }
-          },
-          onError: e => { console.error('jsmediatags error', e); }
-        });
+        cover.src = '';
+        try {
+          const response = await fetch(url);
+          const blob = await response.blob();
+          jsmediatags.read(blob, {
+            onSuccess: tag => {
+              const pic = tag.tags.picture;
+              if (pic) {
+                const imgBlob = new Blob([new Uint8Array(pic.data)], { type: pic.format });
+                cover.src = URL.createObjectURL(imgBlob);
+              }
+            },
+            onError: e => console.error('jsmediatags read error', e)
+          });
+        } catch (e) {
+          console.error('Fetch/metadata error', e);
+        }
         updateMediaSession(); updateLoopUI();
       }
 
       function updateMediaSession() {
-        if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({
-          title: tracks[curTrack].name,
-          artwork: cover.src ? [{ src: cover.src, sizes: '500x500' }] : []
-        });
+        if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: tracks[curTrack].name, artwork: cover.src?[{src:cover.src,sizes:'500x500'}]:[] });
       }
 
-      function updateLoopUI() {
-        btn.loop.textContent = audio.loop ? '🔁 On' : '🔁 Off';
-      }
+      function updateLoopUI() { btn.loop.textContent = audio.loop ? '🔁 On' : '🔁 Off'; }
 
-      // Controls
       btn.play.onclick = () => audio.paused ? audio.play() : audio.pause();
       btn.prev.onclick = () => tracks.length && loadTrack((curTrack - 1 + tracks.length) % tracks.length);
       btn.next.onclick = () => tracks.length && loadTrack((curTrack + 1) % tracks.length);
