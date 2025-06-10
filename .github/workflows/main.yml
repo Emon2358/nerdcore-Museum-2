@@ -13,37 +13,53 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) リポジトリをフル履歴でチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
+          fetch-depth: 0
 
+      # 2) Git の HTTP 設定を拡張（postBuffer 増強／低速時切断回避）
+      - name: Configure Git HTTP settings
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 999999
+
+      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
+      - name: Install Git LFS and track MP3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install --local
+          echo "*.mp3 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          git add .gitattributes
+          git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
+
+      # 4) 依存ツール wget, jq をインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq
 
+      # 5) BASE_URL を環境変数に設定
       - name: Set base URL
         run: echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
 
+      # 6) ディレクトリ一覧を取得
       - name: Fetch list of identifiers
         id: list
         run: |
-          # 1) サブディレクトリ名を抽出（percent-encoded のまま）
           ids=$(curl -s "$BASE_URL" \
             | grep -oP 'href="\K[^"/]+(?=/")' \
             | sort -u)
-
-          # 2) JSON 配列に変換
           json=$(printf '%s\n' "$ids" | jq -R . | jq -s .)
-
-          echo "Found identifiers: $ids"
-
-          # 3) マルチライン出力用に EOF 形式で GITHUB_OUTPUT へ書き込む
           echo "IDENTIFIERS<<EOF" >> $GITHUB_OUTPUT
           echo "$json"               >> $GITHUB_OUTPUT
           echo "EOF"                 >> $GITHUB_OUTPUT
 
+      # 7) MP3 をダウンロード
       - name: Download MP3 files for each identifier
         run: |
           ids=$(echo '${{ steps.list.outputs.IDENTIFIERS }}' | jq -r '.[]')
@@ -56,6 +72,7 @@ jobs:
               || echo "⚠️ $url が存在しないかアクセス不可"
           done
 
+      # 8) ダウンロード結果をリポジトリ内へ
       - name: Copy into repo
         run: |
           mkdir -p albums
@@ -66,6 +83,7 @@ jobs:
               || echo "⚠️ $dir_name に MP3 がありませんでした"
           done
 
+      # 9) コミット＆プッシュ
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
