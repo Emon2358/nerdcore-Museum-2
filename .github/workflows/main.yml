@@ -49,11 +49,11 @@ jobs:
           git add .gitattributes
           git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
 
-      # 4) wget, jq, yt-dlp のインストール
+      # 4) wget, jq, yt-dlp, ffmpeg のインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq python3-pip
+          sudo apt-get install -y wget jq python3-pip ffmpeg
           pip3 install --user yt-dlp
 
       # 5) 入力値を環境変数に設定
@@ -71,7 +71,7 @@ jobs:
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
             | grep '^--' \
             | awk '{print $3}' \
-            | grep -oP '[^/]+(?=/$)' \
+            | grep -oP '[^/]+(?=/)' \
             | sort -u)
 
           decoded_ids=()
@@ -112,20 +112,16 @@ jobs:
             mkdir -p "downloads/$subdir"
 
             if [[ "$target" =~ \.mp3$ ]]; then
-              # 直接MP3ファイルURL: Content-Disposition から正しい名前を取得
               wget --content-disposition -q -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ archive\.org/download ]]; then
-              # archive.org のディレクトリURL
               wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ bandcamp\.com ]]; then
-              # Bandcamp対応: yt-dlp でタイトルベースの名前を付与
               ~/.local/bin/yt-dlp -x --audio-format mp3 \
                 -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
 
             else
-              # 単純ID → BASE_URL/ID/ から
               url="${BASE_URL%/}/$target/"
               if wget --spider --quiet "$url"; then
                 wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$url"
