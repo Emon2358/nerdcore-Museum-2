@@ -12,8 +12,6 @@ internet archiveとbandcamp対応。
 
 ・えびす食堂
 
-・XROGER
-
-・八卦商会
+・XROGER、八卦商会、はんだやレイブ
 
 ・Traffic Jammies
