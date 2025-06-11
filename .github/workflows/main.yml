@@ -38,6 +38,7 @@ jobs:
     if: ${{ github.event.inputs.action == 'download' }}
     runs-on: ubuntu-latest
     steps:
+      #─── Checkout & LFS pull ───────────────────────────────────────
       - name: Checkout repository (with LFS)
         uses: actions/checkout@v3
         with:
@@ -45,6 +46,10 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Pull Git LFS objects
+        run: git lfs pull --all
+
+      #─── Git LFS トラッキング設定 ────────────────────────────────────
       - name: Configure Git LFS Tracking
         run: |
           git config --global http.postBuffer 524288000
@@ -56,12 +61,14 @@ jobs:
           git add .gitattributes || true
           git commit -m "chore: track audio files via Git LFS" || echo "No changes"
 
+      #─── ツールのインストール ───────────────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip ffmpeg
           pip3 install --user yt-dlp
 
+      #─── 入力値を環境変数にセット ───────────────────────────────────
       - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
@@ -69,6 +76,7 @@ jobs:
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
           echo "DEST=${{ github.event.inputs.destination }}" >> $GITHUB_ENV
 
+      #─── identifiers.json の取得（TARGETS 未指定時） ─────────────────
       - name: Fetch list of identifiers
         if: ${{ !github.event.inputs.targets }}
         id: list
@@ -78,6 +86,7 @@ jobs:
             | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
+      #─── ダウンロード処理 ──────────────────────────────────────────
       - name: Download audio files
         run: |
           set -euo pipefail
@@ -110,6 +119,7 @@ jobs:
             fi
           done
 
+      #─── downloads → albums への移動 ─────────────────────────────────
       - name: Move downloads to albums/
         run: |
           mkdir -p albums
@@ -126,17 +136,16 @@ jobs:
             $moved && echo "✔ moved albums/$name" || echo "⚠ no files in $d"
           done
 
+      #─── リリース関連ステップ（DEST==release のとき） ─────────────────
       - name: Generate release tag
         if: env.DEST == 'release'
-        run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d')" >> $GITHUB_ENV
+        run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
       - name: Generate file list
         if: env.DEST == 'release'
         id: file_list
         run: |
-          # 改行区切りでファイル一覧を取得し、カンマ区切りに変換
-          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) \
-            -print | paste -sd "," -)
+          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) -print | paste -sd "," -)
           echo "FILES=$files" >> $GITHUB_ENV
 
       - name: Create GitHub Release
@@ -180,10 +189,12 @@ jobs:
           git pull --rebase origin "$GITHUB_REF_NAME" || true
           git push
 
+
   move-to-release:
     if: ${{ github.event.inputs.action == 'move_only' }}
     runs-on: ubuntu-latest
     steps:
+      #─── Checkout & LFS pull ───────────────────────────────────────
       - name: Checkout repository (with LFS)
         uses: actions/checkout@v3
         with:
@@ -191,16 +202,20 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Pull Git LFS objects
+        run: git lfs pull --all
+
+      #─── リリースタグとファイルリスト生成 ─────────────────────────────
       - name: Generate release tag
         run: echo "RELEASE_TAG=move-albums-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
       - name: Generate file list
         id: file_list
         run: |
-          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) \
-            -print | paste -sd "," -)
+          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) -print | paste -sd "," -)
           echo "FILES=$files" >> $GITHUB_ENV
 
+      #─── Release 作成＆アップロード ─────────────────────────────────
       - name: Create GitHub Release for existing albums
         uses: softprops/action-gh-release@v1
         with:
