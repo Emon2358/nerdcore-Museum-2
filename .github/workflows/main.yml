@@ -20,14 +20,12 @@ on:
       targets:
         description: |
           ダウンロード対象をカンマ区切りで指定。
-          - ディレクトリID（defaults to base_url + ID/）
-          - 直接ファイルURL（.mp3, archive.orgディレクトリURL, Bandcamp URL など）
         required: false
       folder_name:
         description: 'albums/ 以下に作成するフォルダ名を指定。省略時は自動サブフォルダ'
         required: false
       destination:
-        description: '配置先: repo → リポジトリにコミット／release → GitHub Release にアップロード＆リポジトリから削除'
+        description: '配置先: repo → リポジトリにコミット／release → GitHub Release にアップロード＆削除'
         required: true
         default: 'repo'
         type: choice
@@ -90,8 +88,8 @@ jobs:
           else
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
-          for t in "${items[@]}"; do
-            t="${t//\"/}"
+          for raw in "${items[@]}"; do
+            t="${raw//\"/}"
             subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
             echo "→ processing $t → downloads/$subdir/"
@@ -130,12 +128,19 @@ jobs:
 
       - name: Generate release tag
         if: env.DEST == 'release'
+        run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d')" >> $GITHUB_ENV
+
+      - name: Generate file list
+        if: env.DEST == 'release'
+        id: file_list
         run: |
-          echo "RELEASE_TAG=audio-$(date +'%Y%m%d')" >> $GITHUB_ENV
+          # 改行区切りでファイル一覧を取得し、カンマ区切りに変換
+          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) \
+            -print | paste -sd "," -)
+          echo "FILES=$files" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         if: env.DEST == 'release'
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -143,18 +148,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload albums/** to Release
+      - name: Upload albums to Release
         if: env.DEST == 'release'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            albums/**/*.mp3
-            albums/**/*.flac
-            albums/**/*.ogg
-            albums/**/*.m4a
-            albums/**/*.wav
-            albums/**/*.aac
+          files: ${{ env.FILES }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -162,7 +161,7 @@ jobs:
         if: env.DEST == 'release'
         run: |
           git rm -r --ignore-unmatch albums
-          git commit -m "chore: remove albums/ after uploading to Release"
+          git commit -m "chore: remove albums/ after uploading to Release" || echo "No albums to remove"
 
       - name: Commit & Push (repo destination)
         if: env.DEST == 'repo'
@@ -193,11 +192,16 @@ jobs:
           lfs: true
 
       - name: Generate release tag
+        run: echo "RELEASE_TAG=move-albums-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+
+      - name: Generate file list
+        id: file_list
         run: |
-          echo "RELEASE_TAG=move-albums-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) \
+            -print | paste -sd "," -)
+          echo "FILES=$files" >> $GITHUB_ENV
 
       - name: Create GitHub Release for existing albums
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -209,13 +213,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            albums/**/*.mp3
-            albums/**/*.flac
-            albums/**/*.ogg
-            albums/**/*.m4a
-            albums/**/*.wav
-            albums/**/*.aac
+          files: ${{ env.FILES }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
