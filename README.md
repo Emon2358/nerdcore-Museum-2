@@ -18,4 +18,6 @@ internet archiveとbandcamp対応。
 
 ・hyper rich
 
-・既出技術 
+・既出技術
+
+・日本國民
