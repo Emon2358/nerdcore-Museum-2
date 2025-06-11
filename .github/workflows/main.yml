@@ -45,7 +45,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git-lfs
           git lfs install --local
-          # 主要オーディオ形式をすべて LFS 管理
           for ext in mp3 flac ogg m4a wav aac; do
             echo "*.${ext} filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
           done
@@ -85,12 +84,11 @@ jobs:
 
           printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 7) オーディオファイルダウンロード処理（拡張子リスト修正）
+      # 7) オーディオファイルダウンロード処理
       - name: Download audio files
         run: |
           set -euo pipefail
           mkdir -p downloads
-          # wget に渡す受け入れパターンは「*.mp3,*.flac,…」のカンマ区切り
           ACCEPT_LIST="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
 
           if [ -n "$TARGETS" ]; then
@@ -100,7 +98,6 @@ jobs:
           fi
 
           for item in "${items[@]}"; do
-            # 前後の空白とシングル／ダブルクオートを除去
             target="$item"
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
@@ -124,20 +121,13 @@ jobs:
             mkdir -p "downloads/$subdir"
 
             if [[ "$target" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
-              # 直接ファイルURLならそのまま取得
               wget --content-disposition -q -P "downloads/$subdir" "$target"
-
             elif [[ "$target" =~ archive\.org/download ]]; then
-              # archive.org のディレクトリから指定拡張子のファイルを再帰DL
               wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$target"
-
             elif [[ "$target" =~ bandcamp\.com ]]; then
-              # Bandcamp は mp3 に変換して取得
               ~/.local/bin/yt-dlp -x --audio-format mp3 \
                 -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
-
             else
-              # base_url 以下のディレクトリ
               url="${BASE_URL%/}/$target/"
               if wget --spider --quiet "$url"; then
                 wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$url"
@@ -174,15 +164,23 @@ jobs:
             fi
           done
 
-      # 9) コミット＆プッシュ
+      # 9) コミット＆プッシュ（リモートを先にフェッチ＆リベース）
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # リモートの最新を取得してリベース
+          git fetch origin
+          # 現在のブランチ名を取得
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH" || true
+
           git add albums/
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Add audio files for new albums ($(date +'%Y-%m-%d'))"
+            git pull --rebase origin "$BRANCH" || true
             git push
           fi
