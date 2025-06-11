@@ -1,8 +1,19 @@
-name: Download and Commit Audio Albums
+name: Audio Albums Workflow
 
 on:
   workflow_dispatch:
     inputs:
+      # フルダウンロード＆コミット／リリース or 移動のみ を選択
+      action:
+        description: '実行モードを選択: download → ダウンロード＆コミット／リリース（既存移動含む）、move_only → 既存 albums/ を Release に移動'
+        required: true
+        default: 'download'
+        type: choice
+        options:
+          - download
+          - move_only
+
+      # 以下 download モード時のみ使用
       base_url:
         description: 'Root albums URL (with trailing slash). 省略可'
         required: false
@@ -12,61 +23,56 @@ on:
           ダウンロード対象をカンマ区切りで指定。
           - ディレクトリID（defaults to base_url + ID/）
           - 直接ファイルURL（.mp3, archive.orgディレクトリURL, Bandcamp URL など）
-          省略時は base_url 以下すべてのディレクトリを取得して処理
         required: false
       folder_name:
-        description: |
-          albums/ 以下に作成するフォルダ名を指定。
-          省略時は各ID やファイルに応じたサブフォルダを自動作成
+        description: 'albums/ 以下に作成するフォルダ名を指定。省略時は自動サブフォルダ'
         required: false
+      destination:
+        description: '配置先を選択: repo → リポジトリにコミット／release → リリースにアップロード＆リポジトリから削除'
+        required: true
+        default: 'repo'
+        type: choice
+        options:
+          - repo
+          - release
 
 jobs:
   download-and-upload:
+    if: ${{ github.event.inputs.action == 'download' }}
     runs-on: ubuntu-latest
-
     steps:
-      # 1) リポジトリをフル履歴でチェックアウト
-      - name: Checkout repository
+      - name: Checkout repository (with LFS)
         uses: actions/checkout@v3
         with:
           persist-credentials: true
           fetch-depth: 0
+          lfs: true
 
-      # 2) Git の HTTP 設定を拡張
-      - name: Configure Git HTTP settings
+      - name: Configure Git LFS Tracking
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
-
-      # 3) Git LFS をセットアップして主要なオーディオ形式を LFS 管理
-      - name: Install Git LFS and track audio files
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-lfs
-          git lfs install --local
           for ext in mp3 flac ogg m4a wav aac; do
-            echo "*.${ext} filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+            git lfs track "*.${ext}"
           done
-          git add .gitattributes
+          git add .gitattributes || true
           git commit -m "chore: track audio files via Git LFS" || echo "No changes to .gitattributes"
 
-      # 4) wget, jq, yt-dlp, ffmpeg のインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip ffmpeg
           pip3 install --user yt-dlp
 
-      # 5) 入力値を環境変数に設定
-      - name: Set inputs as env vars
+      - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
           echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
+          echo "DEST=${{ github.event.inputs.destination }}" >> $GITHUB_ENV
 
-      # 6) identifiers.json を作る（targets未指定時のみ）
-      - name: Fetch list of identifiers (if no TARGETS)
+      - name: Fetch list of identifiers
         if: ${{ !github.event.inputs.targets }}
         id: list
         run: |
@@ -75,112 +81,146 @@ jobs:
             | awk '{print $3}' \
             | grep -oP '[^/]+(?=/)' \
             | sort -u)
+          printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-          decoded_ids=()
-          for id in $raw_ids; do
-            decoded=$(printf '%b' "${id//%/\\x}")
-            decoded_ids+=("$decoded")
-          done
-
-          printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
-
-      # 7) オーディオファイルダウンロード処理
       - name: Download audio files
         run: |
           set -euo pipefail
           mkdir -p downloads
-          ACCEPT_LIST="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
-
+          ACCEPT="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
           else
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
-
           for item in "${items[@]}"; do
-            target="$item"
-            target="${target#"${target%%[![:space:]]*}"}"
-            target="${target%"${target##*[![:space:]]}"}"
-            target="${target%\"}"
-            target="${target#\"}"
-            target="${target%\'}"
-            target="${target#\'}"
-
-            if [ -n "$FOLDER_NAME" ]; then
-              subdir="$FOLDER_NAME"
-            else
-              if [[ "$target" =~ ^https?:// ]]; then
-                subdir=$(basename "${target%/}")
-                subdir="${subdir%%.*}"
-              else
-                subdir="$target"
-              fi
-            fi
-
-            echo "→ Processing [$target] → albums/$subdir/"
+            t="${item//\"/}"
+            subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
-
-            if [[ "$target" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
-              wget --content-disposition -q -P "downloads/$subdir" "$target"
-            elif [[ "$target" =~ archive\.org/download ]]; then
-              wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$target"
-            elif [[ "$target" =~ bandcamp\.com ]]; then
+            echo "→ processing $t → downloads/$subdir/"
+            if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
+              wget --content-disposition -q -P "downloads/$subdir" "$t"
+            elif [[ "$t" =~ archive\.org/download ]]; then
+              wget -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t"
+            elif [[ "$t" =~ bandcamp\.com ]]; then
               ~/.local/bin/yt-dlp -x --audio-format mp3 \
-                -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
+                -o "downloads/$subdir/%(title)s.%(ext)s" "$t"
             else
-              url="${BASE_URL%/}/$target/"
+              url="${BASE_URL%/}/$t/"
               if wget --spider --quiet "$url"; then
-                wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$url"
+                wget -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url"
               else
-                echo "⚠️ $url が存在しないかアクセス不可"
+                echo "⚠️ $url が存在しない"
               fi
             fi
           done
 
-      # 8) albums/ にコピー
-      - name: Copy into repo
+      - name: Move downloads to albums/
         run: |
-          set -euo pipefail
-          shopt -s nullglob
           mkdir -p albums
-          AUDIO_EXTS=(mp3 flac ogg m4a wav aac)
-
           for d in downloads/*; do
-            dir_name=$(basename "$d")
-            mkdir -p "albums/${dir_name}"
+            name=$(basename "$d")
+            mkdir -p "albums/$name"
+            shopt -s nullglob
             moved=false
-
-            for ext in "${AUDIO_EXTS[@]}"; do
-              for file in "$d"/*."$ext"; do
-                mv "$file" "albums/${dir_name}/"
-                moved=true
+            for ext in mp3 flac ogg m4a wav aac; do
+              for f in "$d"/*."$ext"; do
+                mv "$f" "albums/$name/" && moved=true
               done
             done
-
-            if [ "$moved" = true ]; then
-              echo "✔️ albums/${dir_name}/ にファイルを移動"
-            else
-              echo "⚠️ $d に対応ファイルがありませんでした"
-            fi
+            $moved && echo "✔ moved albums/$name" || echo "⚠ no files in $d"
           done
 
-      # 9) コミット＆プッシュ（リモートを先にフェッチ＆リベース）
-      - name: Commit and push changes
+      - name: Create GitHub Release
+        if: env.DEST == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: audio-$(date +'%Y%m%d')
+          name: "Audio Assets $(date +'%Y-%m-%d')"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload albums/** to Release
+        if: env.DEST == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            albums/**/*.mp3
+            albums/**/*.flac
+            albums/**/*.ogg
+            albums/**/*.m4a
+            albums/**/*.wav
+            albums/**/*.aac
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove albums/ in repo (release only)
+        if: env.DEST == 'release'
+        run: |
+          git rm -r --ignore-unmatch albums
+          git commit -m "chore: remove albums/ after uploading to Release"
+
+      - name: Commit & Push (repo destination)
+        if: env.DEST == 'repo'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # リモートの最新を取得してリベース
-          git fetch origin
-          # 現在のブランチ名を取得
-          BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          git checkout "$BRANCH"
-          git pull --rebase origin "$BRANCH" || true
-
           git add albums/
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add audio files for new albums ($(date +'%Y-%m-%d'))"
-            git pull --rebase origin "$BRANCH" || true
-            git push
+            git commit -m "Add audio files ($(date +'%Y-%m-%d'))"
           fi
+
+      - name: Push changes
+        run: |
+          git pull --rebase origin "$GITHUB_REF_NAME" || true
+          git push
+
+
+  move-to-release:
+    if: ${{ github.event.inputs.action == 'move_only' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (with LFS)
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+          lfs: true
+
+      - name: Create GitHub Release for existing albums
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: move-albums-$(date +'%Y%m%d%H%M%S')
+          name: "Move Albums $(date +'%Y-%m-%d %H:%M:%S')"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload all album files to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.create_release.outputs.tag_name }}
+          files: |
+            albums/**/*.mp3
+            albums/**/*.flac
+            albums/**/*.ogg
+            albums/**/*.m4a
+            albums/**/*.wav
+            albums/**/*.aac
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove albums/ and commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rm -r --ignore-unmatch albums
+          git commit -m "chore: move albums to release ${{ steps.create_release.outputs.tag_name }}"
+        continue-on-error: true
+
+      - name: Push changes
+        run: |
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push
