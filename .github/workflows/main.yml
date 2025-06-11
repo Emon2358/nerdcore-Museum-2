@@ -47,7 +47,7 @@ jobs:
           lfs: true
 
       - name: Pull Git LFS objects
-        run: git lfs pull --all
+        run: git lfs pull
 
       #─── Git LFS トラッキング設定 ────────────────────────────────────
       - name: Configure Git LFS Tracking
@@ -203,7 +203,7 @@ jobs:
           lfs: true
 
       - name: Pull Git LFS objects
-        run: git lfs pull --all
+        run: git lfs pull
 
       #─── リリースタグとファイルリスト生成 ─────────────────────────────
       - name: Generate release tag
