@@ -3,17 +3,16 @@ name: Audio Albums Workflow
 on:
   workflow_dispatch:
     inputs:
-      # フルダウンロード＆コミット／リリース or 移動のみ を選択
+      # 実行モード選択
       action:
-        description: '実行モードを選択: download → ダウンロード＆コミット／リリース（既存移動含む）、move_only → 既存 albums/ を Release に移動'
+        description: '実行モード: download → ダウンロード＆コミット／リリース移行、move_only → 既存 albums/ を Release に移動'
         required: true
         default: 'download'
         type: choice
         options:
           - download
           - move_only
-
-      # 以下 download モード時のみ使用
+      # 以下 download モード時のみ
       base_url:
         description: 'Root albums URL (with trailing slash). 省略可'
         required: false
@@ -28,7 +27,7 @@ on:
         description: 'albums/ 以下に作成するフォルダ名を指定。省略時は自動サブフォルダ'
         required: false
       destination:
-        description: '配置先を選択: repo → リポジトリにコミット／release → リリースにアップロード＆リポジトリから削除'
+        description: '配置先: repo → リポジトリにコミット／release → GitHub Release にアップロード＆リポジトリから削除'
         required: true
         default: 'repo'
         type: choice
@@ -57,7 +56,7 @@ jobs:
             git lfs track "*.${ext}"
           done
           git add .gitattributes || true
-          git commit -m "chore: track audio files via Git LFS" || echo "No changes to .gitattributes"
+          git commit -m "chore: track audio files via Git LFS" || echo "No changes"
 
       - name: Install dependencies
         run: |
@@ -77,10 +76,8 @@ jobs:
         id: list
         run: |
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
-            | grep '^--' \
-            | awk '{print $3}' \
-            | grep -oP '[^/]+(?=/)' \
-            | sort -u)
+            | grep '^--' | awk '{print $3}' \
+            | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
       - name: Download audio files
@@ -93,8 +90,8 @@ jobs:
           else
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
-          for item in "${items[@]}"; do
-            t="${item//\"/}"
+          for t in "${items[@]}"; do
+            t="${t//\"/}"
             subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
             echo "→ processing $t → downloads/$subdir/"
@@ -131,12 +128,18 @@ jobs:
             $moved && echo "✔ moved albums/$name" || echo "⚠ no files in $d"
           done
 
+      - name: Generate release tag
+        if: env.DEST == 'release'
+        run: |
+          echo "RELEASE_TAG=audio-$(date +'%Y%m%d')" >> $GITHUB_ENV
+
       - name: Create GitHub Release
         if: env.DEST == 'release'
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: audio-$(date +'%Y%m%d')
-          name: "Audio Assets $(date +'%Y-%m-%d')"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Audio Assets ${{ env.RELEASE_TAG }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,6 +147,7 @@ jobs:
         if: env.DEST == 'release'
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             albums/**/*.mp3
             albums/**/*.flac
@@ -154,7 +158,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Remove albums/ in repo (release only)
+      - name: Remove albums/ in repo
         if: env.DEST == 'release'
         run: |
           git rm -r --ignore-unmatch albums
@@ -177,7 +181,6 @@ jobs:
           git pull --rebase origin "$GITHUB_REF_NAME" || true
           git push
 
-
   move-to-release:
     if: ${{ github.event.inputs.action == 'move_only' }}
     runs-on: ubuntu-latest
@@ -189,19 +192,23 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Generate release tag
+        run: |
+          echo "RELEASE_TAG=move-albums-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+
       - name: Create GitHub Release for existing albums
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: move-albums-$(date +'%Y%m%d%H%M%S')
-          name: "Move Albums $(date +'%Y-%m-%d %H:%M:%S')"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Move Albums ${{ env.RELEASE_TAG }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload all album files to Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.create_release.outputs.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             albums/**/*.mp3
             albums/**/*.flac
@@ -217,8 +224,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git rm -r --ignore-unmatch albums
-          git commit -m "chore: move albums to release ${{ steps.create_release.outputs.tag_name }}"
-        continue-on-error: true
+          git commit -m "chore: move albums to release ${{ env.RELEASE_TAG }}" || echo "No albums to remove"
 
       - name: Push changes
         run: |
