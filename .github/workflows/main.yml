@@ -1,4 +1,4 @@
-name: Download and Commit MP3 Albums
+name: Download and Commit Audio Albums
 
 on:
   workflow_dispatch:
@@ -39,15 +39,21 @@ jobs:
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
 
-      # 3) Git LFS をセットアップして *.mp3 を LFS 管理
-      - name: Install Git LFS and track MP3
+      # 3) Git LFS をセットアップして主要なオーディオ形式を LFS 管理
+      - name: Install Git LFS and track audio files
         run: |
           sudo apt-get update
           sudo apt-get install -y git-lfs
           git lfs install --local
+          # 主要オーディオ形式をすべて LFS 管理
           echo "*.mp3 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          echo "*.flac filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          echo "*.ogg filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          echo "*.m4a filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          echo "*.wav filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          echo "*.aac filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
           git add .gitattributes
-          git commit -m "chore: track MP3 via Git LFS" || echo "No changes to .gitattributes"
+          git commit -m "chore: track audio files via Git LFS" || echo "No changes to .gitattributes"
 
       # 4) wget, jq, yt-dlp, ffmpeg のインストール
       - name: Install dependencies
@@ -82,11 +88,12 @@ jobs:
 
           printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 7) MP3 ダウンロード処理（xargs を使わない改良版）
-      - name: Download MP3 files
+      # 7) オーディオファイルダウンロード処理（xargs 不要＋複数拡張子対応）
+      - name: Download audio files
         run: |
           set -euo pipefail
           mkdir -p downloads
+          AUDIO_EXTS="mp3,flac,ogg,m4a,wav,aac"
 
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
@@ -118,20 +125,24 @@ jobs:
             echo "→ Processing [$target] → albums/$subdir/"
             mkdir -p "downloads/$subdir"
 
-            if [[ "$target" =~ \.mp3$ ]]; then
+            if [[ "$target" =~ \.(${AUDIO_EXTS//,/|})$ ]]; then
+              # 直接ファイルURLならそのまま取得
               wget --content-disposition -q -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ archive\.org/download ]]; then
-              wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$target"
+              # archive.org のディレクトリから指定拡張子のファイルを再帰DL
+              wget -r -np -nd -A "*.{${AUDIO_EXTS}}" -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ bandcamp\.com ]]; then
+              # Bandcamp は mp3 に変換して取得
               ~/.local/bin/yt-dlp -x --audio-format mp3 \
                 -o "downloads/$subdir/%(title)s.%(ext)s" "$target"
 
             else
+              # base_url 以下のディレクトリ
               url="${BASE_URL%/}/$target/"
               if wget --spider --quiet "$url"; then
-                wget -r -np -nd -A '*.mp3' -P "downloads/$subdir" "$url"
+                wget -r -np -nd -A "*.{${AUDIO_EXTS}}" -P "downloads/$subdir" "$url"
               else
                 echo "⚠️ $url が存在しないかアクセス不可"
               fi
@@ -141,13 +152,28 @@ jobs:
       # 8) albums/ にコピー
       - name: Copy into repo
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           mkdir -p albums
+          AUDIO_EXTS=(mp3 flac ogg m4a wav aac)
+
           for d in downloads/*; do
             dir_name=$(basename "$d")
             mkdir -p "albums/${dir_name}"
-            mv "$d"/*.mp3 "albums/${dir_name}/" \
-              && echo "✔️ albums/${dir_name}/ に移動" \
-              || echo "⚠️ $d にMP3がありませんでした"
+            moved=false
+
+            for ext in "${AUDIO_EXTS[@]}"; do
+              for file in "$d"/*."$ext"; do
+                mv "$file" "albums/${dir_name}/"
+                moved=true
+              done
+            done
+
+            if [ "$moved" = true ]; then
+              echo "✔️ albums/${dir_name}/ にファイルを移動"
+            else
+              echo "⚠️ $d に対応ファイルがありませんでした"
+            fi
           done
 
       # 9) コミット＆プッシュ
@@ -159,6 +185,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add MP3s for new albums ($(date +'%Y-%m-%d'))"
+            git commit -m "Add audio files for new albums ($(date +'%Y-%m-%d'))"
             git push
           fi
