@@ -1,18 +1,8 @@
-name: Audio Albums Workflow
+name: Download and Commit Audio Albums
 
 on:
   workflow_dispatch:
     inputs:
-      # 実行モード選択
-      action:
-        description: '実行モード: download → ダウンロード＆コミット／リリース移行、move_only → 既存 albums/ を Release に移動'
-        required: true
-        default: 'download'
-        type: choice
-        options:
-          - download
-          - move_only
-      # 以下 download モード時のみ
       base_url:
         description: 'Root albums URL (with trailing slash). 省略可'
         required: false
@@ -20,63 +10,38 @@ on:
       targets:
         description: |
           ダウンロード対象をカンマ区切りで指定。
+          - ディレクトリID（defaults to base_url + ID/）
+          - 直接ファイルURL（.mp3, archive.orgディレクトリURL, Bandcamp URL など）
         required: false
       folder_name:
         description: 'albums/ 以下に作成するフォルダ名を指定。省略時は自動サブフォルダ'
         required: false
-      destination:
-        description: '配置先: repo → リポジトリにコミット／release → GitHub Release にアップロード＆削除'
-        required: true
-        default: 'repo'
-        type: choice
-        options:
-          - repo
-          - release
 
 jobs:
-  download-and-upload:
-    if: ${{ github.event.inputs.action == 'download' }}
+  download-and-commit:
     runs-on: ubuntu-latest
     steps:
-      #─── Checkout & LFS pull ───────────────────────────────────────
-      - name: Checkout repository (with LFS)
+      # 1) リポジトリをチェックアウト
+      - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          persist-credentials: true
           fetch-depth: 0
-          lfs: true
 
-      - name: Pull Git LFS objects
-        run: git lfs pull
-
-      #─── Git LFS トラッキング設定 ────────────────────────────────────
-      - name: Configure Git LFS Tracking
-        run: |
-          git config --global http.postBuffer 524288000
-          git config --global http.lowSpeedLimit 0
-          git config --global http.lowSpeedTime 999999
-          for ext in mp3 flac ogg m4a wav aac; do
-            git lfs track "*.${ext}"
-          done
-          git add .gitattributes || true
-          git commit -m "chore: track audio files via Git LFS" || echo "No changes"
-
-      #─── ツールのインストール ───────────────────────────────────────
+      # 2) 必要ツールのインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip ffmpeg
           pip3 install --user yt-dlp
 
-      #─── 入力値を環境変数にセット ───────────────────────────────────
+      # 3) 入力値を環境変数にセット
       - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
           echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
-          echo "DEST=${{ github.event.inputs.destination }}" >> $GITHUB_ENV
 
-      #─── identifiers.json の取得（TARGETS 未指定時） ─────────────────
+      # 4) identifiers.json を作成（TARGETS 未指定時のみ）
       - name: Fetch list of identifiers
         if: ${{ !github.event.inputs.targets }}
         id: list
@@ -86,7 +51,7 @@ jobs:
             | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      #─── ダウンロード処理 ──────────────────────────────────────────
+      # 5) オーディオファイルダウンロード処理
       - name: Download audio files
         run: |
           set -euo pipefail
@@ -97,11 +62,12 @@ jobs:
           else
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
+
           for raw in "${items[@]}"; do
             t="${raw//\"/}"
             subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
-            echo "→ processing $t → downloads/$subdir/"
+            echo "→ Processing [$t] → downloads/$subdir/"
             if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
               wget --content-disposition -q -P "downloads/$subdir" "$t"
             elif [[ "$t" =~ archive\.org/download ]]; then
@@ -119,7 +85,7 @@ jobs:
             fi
           done
 
-      #─── downloads → albums への移動 ─────────────────────────────────
+      # 6) downloads → albums/ へ移動
       - name: Move downloads to albums/
         run: |
           mkdir -p albums
@@ -133,47 +99,15 @@ jobs:
                 mv "$f" "albums/$name/" && moved=true
               done
             done
-            $moved && echo "✔ moved albums/$name" || echo "⚠ no files in $d"
+            if [ "$moved" = true ]; then
+              echo "✔ Moved albums/$name"
+            else
+              echo "⚠ No audio files in $d"
+            fi
           done
 
-      #─── リリース関連ステップ（DEST==release のとき） ─────────────────
-      - name: Generate release tag
-        if: env.DEST == 'release'
-        run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
-
-      - name: Generate file list
-        if: env.DEST == 'release'
-        id: file_list
-        run: |
-          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) -print | paste -sd "," -)
-          echo "FILES=$files" >> $GITHUB_ENV
-
-      - name: Create GitHub Release
-        if: env.DEST == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "Audio Assets ${{ env.RELEASE_TAG }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload albums to Release
-        if: env.DEST == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: ${{ env.FILES }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Remove albums/ in repo
-        if: env.DEST == 'release'
-        run: |
-          git rm -r --ignore-unmatch albums
-          git commit -m "chore: remove albums/ after uploading to Release" || echo "No albums to remove"
-
-      - name: Commit & Push (repo destination)
-        if: env.DEST == 'repo'
+      # 7) コミット＆プッシュ
+      - name: Commit & Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -182,64 +116,6 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Add audio files ($(date +'%Y-%m-%d'))"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
           fi
-
-      - name: Push changes
-        run: |
-          git pull --rebase origin "$GITHUB_REF_NAME" || true
-          git push
-
-
-  move-to-release:
-    if: ${{ github.event.inputs.action == 'move_only' }}
-    runs-on: ubuntu-latest
-    steps:
-      #─── Checkout & LFS pull ───────────────────────────────────────
-      - name: Checkout repository (with LFS)
-        uses: actions/checkout@v3
-        with:
-          persist-credentials: true
-          fetch-depth: 0
-          lfs: true
-
-      - name: Pull Git LFS objects
-        run: git lfs pull
-
-      #─── リリースタグとファイルリスト生成 ─────────────────────────────
-      - name: Generate release tag
-        run: echo "RELEASE_TAG=move-albums-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
-
-      - name: Generate file list
-        id: file_list
-        run: |
-          files=$(find albums -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' \) -print | paste -sd "," -)
-          echo "FILES=$files" >> $GITHUB_ENV
-
-      #─── Release 作成＆アップロード ─────────────────────────────────
-      - name: Create GitHub Release for existing albums
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "Move Albums ${{ env.RELEASE_TAG }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload all album files to Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: ${{ env.FILES }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Remove albums/ and commit
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git rm -r --ignore-unmatch albums
-          git commit -m "chore: move albums to release ${{ env.RELEASE_TAG }}" || echo "No albums to remove"
-
-      - name: Push changes
-        run: |
-          git pull --rebase origin "${GITHUB_REF_NAME}" || true
-          git push
