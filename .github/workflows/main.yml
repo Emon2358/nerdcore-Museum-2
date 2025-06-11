@@ -1,4 +1,4 @@
-name: Download and Commit Audio Albums
+name: Download and Upload Audio Albums via GigaFile
 
 on:
   workflow_dispatch:
@@ -18,10 +18,10 @@ on:
         required: false
 
 jobs:
-  download-and-commit:
+  download-and-upload:
     runs-on: ubuntu-latest
     steps:
-      # 1) リポジトリをチェックアウト
+      # 1) リポジトリをチェックアウト（LFS は使いません）
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
@@ -31,8 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq python3-pip ffmpeg
-          pip3 install --user yt-dlp
+          sudo apt-get install -y wget jq python3-pip ffmpeg zip
+          pip3 install --user yt-dlp gigafile
 
       # 3) 入力値を環境変数にセット
       - name: Set inputs
@@ -57,6 +57,7 @@ jobs:
           set -euo pipefail
           mkdir -p downloads
           ACCEPT="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
+
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
           else
@@ -85,7 +86,7 @@ jobs:
             fi
           done
 
-      # 6) downloads → albums/ へ移動
+      # 6) downloads → albums/ へ移動（フォルダ名を保持）
       - name: Move downloads to albums/
         run: |
           mkdir -p albums
@@ -99,23 +100,26 @@ jobs:
                 mv "$f" "albums/$name/" && moved=true
               done
             done
-            if [ "$moved" = true ]; then
+            if $moved; then
               echo "✔ Moved albums/$name"
             else
               echo "⚠ No audio files in $d"
             fi
           done
 
-      # 7) コミット＆プッシュ
-      - name: Commit & Push
+      # 7) albums/ を ZIP 化
+      - name: Zip albums directory
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add albums/
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Add audio files ($(date +'%Y-%m-%d'))"
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
-          fi
+          zip -r albums.zip albums
+
+      # 8) GigaFile便へアップロードし、URL を取得
+      - name: Upload albums.zip to GigaFile
+        id: upload
+        run: |
+          UPLOAD_URL=$(gfile upload albums.zip | tail -n1)
+          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
+
+      # 9) 結果 URL を出力
+      - name: Show GigaFile URL
+        run: |
+          echo "🎉 Your download link: ${{ env.UPLOAD_URL }}"
