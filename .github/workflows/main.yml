@@ -1,10 +1,10 @@
-name: Download and Upload Audio Albums as Release Asset
+name: Download and Release Audio Albums
 
 on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Root albums URL (with trailing slash). 省略可'
+        description: 'Root albums URL (with trailing slash).省略可'
         required: false
         default: 'https://archive.org/download/Sharpnel-Discography/SHARPNELSOUND/albums/'
       targets:
@@ -14,7 +14,7 @@ on:
           - 直接ファイルURL
         required: false
       folder_name:
-        description: 'albums/ 以下に作成するフォルダ名。省略時は自動サブフォルダ'
+        description: 'albums/以下に作成するフォルダ名。省略時はIDごとのフォルダ'
         required: false
 
 jobs:
@@ -25,10 +25,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq python3-pip ffmpeg zip
+          sudo apt-get install -y wget jq python3-pip ffmpeg zip gh
           pip3 install --user yt-dlp
 
-      # 2) 入力をセット
+      # 2) 入力を環境変数にセット
       - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
@@ -36,7 +36,7 @@ jobs:
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
 
       # 3) identifiers.json 作成（TARGETS 未指定時のみ）
-      - name: Fetch list of identifiers
+      - name: Fetch identifiers
         if: ${{ !github.event.inputs.targets }}
         run: |
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
@@ -44,18 +44,14 @@ jobs:
             | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 4) ダウンロード（再開機能つき）
-      - name: Download audio files
+      # 4) ダウンロード（失敗はスキップ）
+      - name: Download audio files (skip failures)
         run: |
-          set -euo pipefail
           mkdir -p downloads
           AUDIO_EXTS=(mp3 flac ogg m4a wav aac opus wma)
           ACCEPT=$(printf ",*.%s" "${AUDIO_EXTS[@]}") && ACCEPT="${ACCEPT:1}"
 
-          # retry function
-          retry(){ for i in 1 2 3 4 5; do "$@" && return; echo "Retry $i..."; sleep 5; done; false; }
-
-          # targets list
+          # choose targets list
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
           else
@@ -66,21 +62,21 @@ jobs:
             t="${raw//\"/}"
             subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
-            echo "→ Processing $t"
+            echo "→ Processing [$t]"
             if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac|opus|wma)$ ]]; then
-              retry wget -c -P "downloads/$subdir" "$t"
+              wget -c -P "downloads/$subdir" "$t" || echo "⚠ Failed to download $t, skipping"
             elif [[ "$t" =~ archive\.org/download ]]; then
-              retry wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t"
+              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t" || echo "⚠ Failed to download $t, skipping"
             elif [[ "$t" =~ bandcamp\.com ]]; then
-              retry yt-dlp -x --audio-format mp3 -o "downloads/$subdir/%(title)s.%(ext)s" "$t"
+              yt-dlp -x --audio-format mp3 -o "downloads/$subdir/%(title)s.%(ext)s" "$t" || echo "⚠ Failed to download $t, skipping"
             else
               url="${BASE_URL%/}/$t/"
-              retry wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url"
+              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url" || echo "⚠ Failed to download $url, skipping"
             fi
           done
 
-      # 5) downloads → albums に移動
-      - name: Organize downloads into albums/
+      # 5) downloads → albumsに整理
+      - name: Organize into albums/
         run: |
           mkdir -p albums
           AUDIO_EXTS=(mp3 flac ogg m4a wav aac opus wma)
@@ -93,33 +89,36 @@ jobs:
             done
           done
 
-      # 6) ZIP 化
-      - name: Create albums.zip
+      # 6) ZIP化
+      - name: Zip albums
         run: zip -r albums.zip albums
 
       # 7) Release タグ生成
       - name: Generate release tag
         run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
-      # 8) GitHub Release 作成
+      # 8) GitHub CLI 認証
+      - name: Authenticate gh CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      # 9) Release 作成
       - name: Create GitHub Release
         id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "Audio Albums ${{ env.RELEASE_TAG }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$RELEASE_TAG" albums.zip \
+            --title "Audio Albums $RELEASE_TAG" \
+            --notes "Generated on $(date +'%Y-%m-%d %H:%M:%S')"
 
-      # 9) Release Asset として ZIP をアップロード
-      - name: Upload albums.zip as Release Asset
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: albums.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 10) Retry Upload if needed (gh handles retries internally, but wrap just in case)
+      - name: Ensure Release Asset
+        run: |
+          for i in {1..5}; do
+            gh release view "$RELEASE_TAG" --json assets | grep albums.zip && break
+            echo "Retrying asset upload ($i/5)..."
+            gh release upload "$RELEASE_TAG" albums.zip && break
+            sleep 5
+          done
 
-      # 10) 完了ログ
+      # 11) 完了ログ
       - name: Done
-        run: echo "🎉 Uploaded albums.zip to release ${{ env.RELEASE_TAG }}"
+        run: echo "🎉 albums.zip is available in release $RELEASE_TAG"
