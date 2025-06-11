@@ -15,3 +15,5 @@ internet archiveとbandcamp対応。
 ・XROGER、八卦商会、はんだやレイブ
 
 ・Traffic Jammies
+
+・hyper rich
