@@ -17,3 +17,5 @@ internet archiveとbandcamp対応。
 ・Traffic Jammies
 
 ・hyper rich
+
+・既出技術 
