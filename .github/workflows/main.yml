@@ -46,12 +46,9 @@ jobs:
           sudo apt-get install -y git-lfs
           git lfs install --local
           # 主要オーディオ形式をすべて LFS 管理
-          echo "*.mp3 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
-          echo "*.flac filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
-          echo "*.ogg filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
-          echo "*.m4a filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
-          echo "*.wav filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
-          echo "*.aac filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          for ext in mp3 flac ogg m4a wav aac; do
+            echo "*.${ext} filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          done
           git add .gitattributes
           git commit -m "chore: track audio files via Git LFS" || echo "No changes to .gitattributes"
 
@@ -88,12 +85,13 @@ jobs:
 
           printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 7) オーディオファイルダウンロード処理（xargs 不要＋複数拡張子対応）
+      # 7) オーディオファイルダウンロード処理（拡張子リスト修正）
       - name: Download audio files
         run: |
           set -euo pipefail
           mkdir -p downloads
-          AUDIO_EXTS="mp3,flac,ogg,m4a,wav,aac"
+          # wget に渡す受け入れパターンは「*.mp3,*.flac,…」のカンマ区切り
+          ACCEPT_LIST="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
 
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
@@ -125,13 +123,13 @@ jobs:
             echo "→ Processing [$target] → albums/$subdir/"
             mkdir -p "downloads/$subdir"
 
-            if [[ "$target" =~ \.(${AUDIO_EXTS//,/|})$ ]]; then
+            if [[ "$target" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
               # 直接ファイルURLならそのまま取得
               wget --content-disposition -q -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ archive\.org/download ]]; then
               # archive.org のディレクトリから指定拡張子のファイルを再帰DL
-              wget -r -np -nd -A "*.{${AUDIO_EXTS}}" -P "downloads/$subdir" "$target"
+              wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$target"
 
             elif [[ "$target" =~ bandcamp\.com ]]; then
               # Bandcamp は mp3 に変換して取得
@@ -142,7 +140,7 @@ jobs:
               # base_url 以下のディレクトリ
               url="${BASE_URL%/}/$target/"
               if wget --spider --quiet "$url"; then
-                wget -r -np -nd -A "*.{${AUDIO_EXTS}}" -P "downloads/$subdir" "$url"
+                wget -r -np -nd -A "$ACCEPT_LIST" -P "downloads/$subdir" "$url"
               else
                 echo "⚠️ $url が存在しないかアクセス不可"
               fi
