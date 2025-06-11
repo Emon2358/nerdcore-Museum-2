@@ -1,4 +1,4 @@
-name: Download and Upload Audio Albums via GigaFile
+name: Download and Commit Audio Albums
 
 on:
   workflow_dispatch:
@@ -18,108 +18,120 @@ on:
         required: false
 
 jobs:
-  download-and-upload:
+  download-and-commit:
     runs-on: ubuntu-latest
     steps:
-      # 1) リポジトリをチェックアウト（LFS は使いません）
+      # 1) Checkout
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      # 2) 必要ツールのインストール
+      # 2) Install tools
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip ffmpeg zip
-          pip3 install --user yt-dlp gigafile
+          pip3 install --user yt-dlp
 
-      # 3) 入力値を環境変数にセット
+      # 3) Set inputs
       - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
           echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
 
-      # 4) identifiers.json を作成（TARGETS 未指定時のみ）
+      # 4) Build identifiers.json
       - name: Fetch list of identifiers
         if: ${{ !github.event.inputs.targets }}
-        id: list
         run: |
           raw_ids=$(wget --spider -r -l1 -nd -np "$BASE_URL" 2>&1 \
             | grep '^--' | awk '{print $3}' \
             | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 5) オーディオファイルダウンロード処理
+      # 5) Download audio files with retry
       - name: Download audio files
         run: |
           set -euo pipefail
           mkdir -p downloads
-          ACCEPT="*.mp3,*.flac,*.ogg,*.m4a,*.wav,*.aac"
+          AUDIO_EXTS=(mp3 flac ogg m4a wav aac opus wma)
+          ACCEPT=$(printf ",*.%s" "${AUDIO_EXTS[@]}") && ACCEPT="${ACCEPT:1}"
 
+          # choose targets
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
           else
             mapfile -t items < <(jq -r '.[]' identifiers.json)
           fi
 
+          download_with_retry() {
+            cmd="$1"; max=5; i=0
+            until [ $i -ge $max ]; do
+              if eval "$cmd"; then
+                return 0
+              fi
+              i=$((i+1))
+              echo "Retrying ($i/$max)..."
+              sleep 5
+            done
+            return 1
+          }
+
           for raw in "${items[@]}"; do
             t="${raw//\"/}"
             subdir="${FOLDER_NAME:-${t%%.*}}"
             mkdir -p "downloads/$subdir"
-            echo "→ Processing [$t] → downloads/$subdir/"
-            if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac)$ ]]; then
-              wget --content-disposition -q -P "downloads/$subdir" "$t"
+            echo "→ Processing [$t]"
+            if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac|opus|wma)$ ]]; then
+              cmd="wget -c --tries=3 --retry-connrefused -P downloads/$subdir \"$t\""
             elif [[ "$t" =~ archive\.org/download ]]; then
-              wget -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t"
+              cmd="wget -c -r -np -nd -A \"$ACCEPT\" -P downloads/$subdir \"$t\""
             elif [[ "$t" =~ bandcamp\.com ]]; then
-              ~/.local/bin/yt-dlp -x --audio-format mp3 \
-                -o "downloads/$subdir/%(title)s.%(ext)s" "$t"
+              cmd="yt-dlp -x --audio-format mp3 -o \"downloads/$subdir/%(title)s.%(ext)s\" \"$t\""
             else
               url="${BASE_URL%/}/$t/"
-              if wget --spider --quiet "$url"; then
-                wget -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url"
-              else
-                echo "⚠️ $url が存在しない"
-              fi
+              cmd="wget -c -r -np -nd -A \"$ACCEPT\" -P downloads/$subdir \"$url\""
             fi
+            download_with_retry "$cmd" || echo "⚠ Failed to download $t"
           done
 
-      # 6) downloads → albums/ へ移動（フォルダ名を保持）
+      # 6) Move to albums/
       - name: Move downloads to albums/
         run: |
           mkdir -p albums
+          AUDIO_EXTS=(mp3 flac ogg m4a wav aac opus wma)
           for d in downloads/*; do
             name=$(basename "$d")
             mkdir -p "albums/$name"
             shopt -s nullglob
-            moved=false
-            for ext in mp3 flac ogg m4a wav aac; do
-              for f in "$d"/*."$ext"; do
-                mv "$f" "albums/$name/" && moved=true
-              done
+            for ext in "${AUDIO_EXTS[@]}"; do
+              mv -u "$d"/*."$ext" "albums/$name/" || true
             done
-            if $moved; then
-              echo "✔ Moved albums/$name"
-            else
-              echo "⚠ No audio files in $d"
-            fi
           done
 
-      # 7) albums/ を ZIP 化
+      # 7) Zip albums
       - name: Zip albums directory
-        run: |
-          zip -r albums.zip albums
+        run: zip -r albums.zip albums
 
-      # 8) GigaFile便へアップロードし、URL を取得
-      - name: Upload albums.zip to GigaFile
-        id: upload
+      # 8) Commit & push with retry
+      - name: Commit & Push to repo
         run: |
-          UPLOAD_URL=$(gfile upload albums.zip | tail -n1)
-          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
-
-      # 9) 結果 URL を出力
-      - name: Show GigaFile URL
-        run: |
-          echo "🎉 Your download link: ${{ env.UPLOAD_URL }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add albums/ albums.zip
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Add/update audio albums and zip ($(date +'%Y-%m-%d'))"
+          for i in {1..5}; do
+            if git push; then
+              echo "Push succeeded."
+              exit 0
+            fi
+            echo "Push failed, retrying ($i/5)..."
+            sleep 5
+          done
+          echo "⚠ Failed to push after retries." >&2
+          exit 1
