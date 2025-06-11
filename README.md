@@ -21,3 +21,5 @@ internet archiveとbandcamp対応。
 ・既出技術
 
 ・日本國民
+
+・DATゾイド
