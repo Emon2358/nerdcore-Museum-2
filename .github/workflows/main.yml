@@ -82,7 +82,7 @@ jobs:
 
           printf '%s\n' "${decoded_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 7) MP3 ダウンロード処理
+      # 7) MP3 ダウンロード処理（xargs を使わない改良版）
       - name: Download MP3 files
         run: |
           set -euo pipefail
@@ -95,7 +95,14 @@ jobs:
           fi
 
           for item in "${items[@]}"; do
-            target=$(echo "$item" | xargs)
+            # 前後の空白とシングル／ダブルクオートを除去
+            target="$item"
+            target="${target#"${target%%[![:space:]]*}"}"
+            target="${target%"${target##*[![:space:]]}"}"
+            target="${target%\"}"
+            target="${target#\"}"
+            target="${target%\'}"
+            target="${target#\'}"
 
             if [ -n "$FOLDER_NAME" ]; then
               subdir="$FOLDER_NAME"
