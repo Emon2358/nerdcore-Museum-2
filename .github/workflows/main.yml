@@ -21,21 +21,27 @@ jobs:
   download-and-release:
     runs-on: ubuntu-latest
     steps:
-      # 1) 必要ツールのインストール
+      # 1) Checkout so that .git exists for gh release
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # 2) 必要ツールのインストール
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget jq python3-pip ffmpeg zip gh
           pip3 install --user yt-dlp
 
-      # 2) 入力を環境変数にセット
+      # 3) 入力を環境変数にセット
       - name: Set inputs
         run: |
           echo "BASE_URL=${{ github.event.inputs.base_url }}" >> $GITHUB_ENV
           echo "TARGETS=${{ github.event.inputs.targets }}" >> $GITHUB_ENV
           echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
 
-      # 3) identifiers.json 作成（TARGETS 未指定時のみ）
+      # 4) identifiers.json 作成（TARGETS 未指定時のみ）
       - name: Fetch identifiers
         if: ${{ !github.event.inputs.targets }}
         run: |
@@ -44,14 +50,13 @@ jobs:
             | grep -oP '[^/]+(?=/)' | sort -u)
           printf '%b\n' "${raw_ids[@]}" | jq -R . | jq -s . > identifiers.json
 
-      # 4) ダウンロード（失敗はスキップ）
+      # 5) ダウンロード（失敗はスキップ）
       - name: Download audio files (skip failures)
         run: |
           mkdir -p downloads
           AUDIO_EXTS=(mp3 flac ogg m4a wav aac opus wma)
           ACCEPT=$(printf ",*.%s" "${AUDIO_EXTS[@]}") && ACCEPT="${ACCEPT:1}"
 
-          # choose targets list
           if [ -n "$TARGETS" ]; then
             IFS=',' read -ra items <<< "$TARGETS"
           else
@@ -64,18 +69,18 @@ jobs:
             mkdir -p "downloads/$subdir"
             echo "→ Processing [$t]"
             if [[ "$t" =~ \.(mp3|flac|ogg|m4a|wav|aac|opus|wma)$ ]]; then
-              wget -c -P "downloads/$subdir" "$t" || echo "⚠ Failed to download $t, skipping"
+              wget -c -P "downloads/$subdir" "$t" || echo "⚠ Skip $t"
             elif [[ "$t" =~ archive\.org/download ]]; then
-              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t" || echo "⚠ Failed to download $t, skipping"
+              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$t" || echo "⚠ Skip $t"
             elif [[ "$t" =~ bandcamp\.com ]]; then
-              yt-dlp -x --audio-format mp3 -o "downloads/$subdir/%(title)s.%(ext)s" "$t" || echo "⚠ Failed to download $t, skipping"
+              yt-dlp -x --audio-format mp3 -o "downloads/$subdir/%(title)s.%(ext)s" "$t" || echo "⚠ Skip $t"
             else
               url="${BASE_URL%/}/$t/"
-              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url" || echo "⚠ Failed to download $url, skipping"
+              wget -c -r -np -nd -A "$ACCEPT" -P "downloads/$subdir" "$url" || echo "⚠ Skip $url"
             fi
           done
 
-      # 5) downloads → albumsに整理
+      # 6) downloads → albums に整理
       - name: Organize into albums/
         run: |
           mkdir -p albums
@@ -89,33 +94,31 @@ jobs:
             done
           done
 
-      # 6) ZIP化
+      # 7) ZIP化
       - name: Zip albums
         run: zip -r albums.zip albums
 
-      # 7) Release タグ生成
+      # 8) Release タグ生成
       - name: Generate release tag
         run: echo "RELEASE_TAG=audio-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
-      # 8) GitHub CLI 認証
+      # 9) GitHub CLI 認証
       - name: Authenticate gh CLI
         run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      # 9) Release 作成
-      - name: Create GitHub Release
-        id: create_release
+      # 10) Release 作成＆ZIPアップロード（失敗はリトライ）
+      - name: Create Release and upload asset
         run: |
-          gh release create "$RELEASE_TAG" albums.zip \
-            --title "Audio Albums $RELEASE_TAG" \
-            --notes "Generated on $(date +'%Y-%m-%d %H:%M:%S')"
-
-      # 10) Retry Upload if needed (gh handles retries internally, but wrap just in case)
-      - name: Ensure Release Asset
-        run: |
+          # create or update release
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists, updating asset..."
+          else
+            gh release create "$RELEASE_TAG" --title "Audio Albums $RELEASE_TAG" --notes "Generated on $(date +'%Y-%m-%d %H:%M:%S')"
+          fi
+          # upload with retries
           for i in {1..5}; do
-            gh release view "$RELEASE_TAG" --json assets | grep albums.zip && break
-            echo "Retrying asset upload ($i/5)..."
-            gh release upload "$RELEASE_TAG" albums.zip && break
+            gh release upload "$RELEASE_TAG" albums.zip --clobber && break
+            echo "Retry upload ($i/5)..."
             sleep 5
           done
 
